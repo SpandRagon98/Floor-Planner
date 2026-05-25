@@ -369,7 +369,7 @@ button { appearance: none; -webkit-appearance: none; }
   background: linear-gradient(90deg, transparent, rgba(59,124,248,0.16), transparent);
 }
 .summary-box span { font-size: 8.5px; color: var(--text-soft); margin-bottom: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-.summary-box strong { font-size: 20px; font-weight: 900; letter-spacing: -0.05em; color: var(--navy-deep); line-height: 1; }
+.summary-box strong { font-size: 20px; font-weight: 600; letter-spacing: -0.03em; color: var(--navy-deep); line-height: 1; }
 
 /* ── Chatbot ── */
 .chatbot-card {
@@ -1463,21 +1463,15 @@ button { appearance: none; -webkit-appearance: none; }
 .field--color-inline label { margin-bottom: 0; white-space: nowrap; }
 
 /* ── Header brand logo ── */
-/* Shows a gradient badge if the PNG image fails to load */
 .header-brand-logo {
   display: block;
   flex-shrink: 0;
   width: 34px; height: 34px;
   border-radius: 8px;
   object-fit: contain;
-  /* gradient fallback visible when image fails or is transparent */
-  background: linear-gradient(145deg, #1847c0 0%, #3b7cf8 100%);
-  /* force display even if img src is broken */
-  overflow: hidden;
+  /* no background — let the logo PNG render on transparent */
+  background: transparent;
 }
-/* Remove the broken-image icon on failed load */
-.header-brand-logo:-moz-broken   { background: linear-gradient(145deg,#1847c0,#3b7cf8); }
-.header-brand-logo[src=""]       { background: linear-gradient(145deg,#1847c0,#3b7cf8); }
 
 /* Wall color input */
 .wall-color-input {
