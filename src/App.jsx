@@ -94,6 +94,9 @@ import { generateSmartVariants, parseRuleBasedPlanCommand, sanitizeOpenAIPlanRes
 import { fileToBase64, normalizeVisionWallName, resizeImageFileForVision, derivePlanSizeFromVision, sanitizeVisionFloorPlanResponse, analyzeFloorPlanImageWithOpenAI } from "./ai/imageAnalysis";
 import { generatePlanRendersWithOpenAI } from "./ai/renderGeneration";
 import { resolveAssetPath } from "./utils/assets";
+import { useTheme } from "./hooks/useTheme";
+import { useSunSettings } from "./hooks/useSunSettings";
+import { useAssistantCollapsed } from "./hooks/useAssistantCollapsed";
 import { Floor3DScene } from "./components/3d/Floor3DComponents";
 import ReadOnly3DViewerShell from "./pages/ReadOnly3DViewerShell";
 import { Opening2D, Furniture2D, computeFurnitureLabelOffsets } from "./components/2d/Floor2DComponents";
@@ -174,10 +177,7 @@ export default function App() {
   const [customPresetDimensions, setCustomPresetDimensions] = useState({});
 
   // ── Theme ──
-  const [theme, setTheme] = useState(() => {
-    if (typeof window === "undefined") return "light";
-    return window.localStorage.getItem(THEME_STORAGE_KEY) === "dark" ? "dark" : "light";
-  });
+  const { theme, setTheme } = useTheme();
 
   // ── Project state ──
   const [savedProjects,        setSavedProjects]        = useState([]);
@@ -192,22 +192,8 @@ export default function App() {
     [isReadOnly3DViewer]
   );
   const [expandedRoomIds,      setExpandedRoomIds]      = useState({});
-  const [assistantCollapsed,   setAssistantCollapsed]   = useState(() => {
-    if (!FEATURE_ASSISTANT_ENABLED) return true;
-    if (typeof window === "undefined") return false;
-    return window.sessionStorage.getItem(ASSISTANT_COLLAPSED_SESSION_KEY) === "true";
-  });
-  const [sunControlsCollapsed, setSunControlsCollapsed] = useState(true);
-  const [renderQuality, setRenderQuality] = useState("high");
-  const [sunSettings, setSunSettings] = useState(() => {
-    if (typeof window === "undefined") return DEFAULT_SUN_SETTINGS;
-    try {
-      const raw = window.sessionStorage.getItem(SUN_SETTINGS_SESSION_KEY);
-      return raw ? { ...DEFAULT_SUN_SETTINGS, ...JSON.parse(raw) } : DEFAULT_SUN_SETTINGS;
-    } catch {
-      return DEFAULT_SUN_SETTINGS;
-    }
-  });
+  const { assistantCollapsed, setAssistantCollapsed } = useAssistantCollapsed();
+  const { sunSettings, setSunSettings, sunControlsCollapsed, setSunControlsCollapsed, renderQuality, setRenderQuality } = useSunSettings();
 
   // ── Chat ──
   const [chatMessages,  setChatMessages]  = useState(() => [createChatMessage("assistant", "Hi, I can help you navigate the app, create layouts like 1BHK / 2BHK / office / cafe, and apply voice commands.")]);
@@ -417,20 +403,6 @@ export default function App() {
     if (generatedRenderProjectId !== currentProjectId) setGeneratedRenderImage("");
   }, [currentProjectId, generatedRenderProjectId]);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }, [theme]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.sessionStorage.setItem(ASSISTANT_COLLAPSED_SESSION_KEY, assistantCollapsed ? "true" : "false");
-  }, [assistantCollapsed]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.sessionStorage.setItem(SUN_SETTINGS_SESSION_KEY, JSON.stringify(sunSettings));
-  }, [sunSettings]);
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
