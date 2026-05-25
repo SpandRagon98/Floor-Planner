@@ -86,6 +86,8 @@ import { isKitchenSlab, getNormalizedFurnitureRotation, getRotatedFurnitureFootp
 import { normalizeDoor, normalizeWindow, normalizeCutout, normalizeRoom, getRoomOpenings } from "./utils/normalization";
 import { getOpeningLineSegment, getSegmentOpenings, buildWallSegments } from "./utils/geometry";
 import { createRoom, fitRoomsInGrid, getDefaultRooms } from "./utils/rooms";
+import { createProjectId, getDefaultProjectState, readProjectsFromStorage, writeProjectsToStorage } from "./storage/projects";
+import { getProjectIdFromUrl, buildProjectShareUrl, getViewModeFromUrl, isReadOnlyViewerModeFromUrl, buildReadOnly3DViewerUrl, syncProjectIdToUrl } from "./storage/url";
 
 function resolveAssetPath(path) {
   const raw = String(path || "").trim();
@@ -1744,101 +1746,6 @@ function FurnitureManagerPage({ rooms, theme, customPresetDimensions, onUpdateCu
       </div>
     </div>
   );
-}
-
-// ─── Template / preset helpers ────────────────────────────────────────────────
-
-function createProjectId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  return `project-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function getDefaultProjectState() {
-  return {
-    planName: "My Floor Plan",
-    totalWidth: 40,
-    totalHeight: 10,
-    wallThickness: WALL_THICKNESS_FT,
-    roomThickness: ROOM_THICKNESS_FT,
-    scale: DEFAULT_SCALE,
-    roomHeight: DEFAULT_ROOM_HEIGHT,
-    activeView: "2d",
-    selectedCategory: "house",
-    rooms: getDefaultRooms(40, 10),
-    furnitureSelections: {},
-    customPresetDimensions: {},
-    assistantCollapsed: false,
-    sunSettings: DEFAULT_SUN_SETTINGS,
-    globalWallColor: DEFAULT_WALL_COLOR,
-  };
-}
-
-function readProjectsFromStorage() {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(PROJECTS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch { return []; }
-}
-
-function writeProjectsToStorage(projects) {
-  if (typeof window === "undefined") return;
-  try { window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects)); } catch {}
-}
-
-function getProjectIdFromUrl() {
-  if (typeof window === "undefined") return "";
-  try {
-    return new URL(window.location.href).searchParams.get(PROJECT_ID_QUERY_PARAM) || "";
-  } catch {
-    return "";
-  }
-}
-
-function buildProjectShareUrl(projectId) {
-  if (typeof window === "undefined" || !projectId) return "";
-  const url = new URL(window.location.href);
-  url.searchParams.set(PROJECT_ID_QUERY_PARAM, projectId);
-  return url.toString();
-}
-
-function getViewModeFromUrl() {
-  if (typeof window === "undefined") return "";
-  try {
-    return (new URL(window.location.href).searchParams.get(VIEW_QUERY_PARAM) || "").toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function isReadOnlyViewerModeFromUrl() {
-  if (typeof window === "undefined") return false;
-  try {
-    return new URL(window.location.href).searchParams.get(VIEWER_MODE_QUERY_PARAM) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function buildReadOnly3DViewerUrl(projectId) {
-  if (typeof window === "undefined" || !projectId) return "";
-  const url = new URL(window.location.href);
-  url.searchParams.set(PROJECT_ID_QUERY_PARAM, projectId);
-  url.searchParams.set(VIEW_QUERY_PARAM, "3d");
-  url.searchParams.set(VIEWER_MODE_QUERY_PARAM, "1");
-  return url.toString();
-}
-
-function syncProjectIdToUrl(projectId) {
-  if (typeof window === "undefined") return;
-  try {
-    const url = new URL(window.location.href);
-    if (projectId) url.searchParams.set(PROJECT_ID_QUERY_PARAM, projectId);
-    else url.searchParams.delete(PROJECT_ID_QUERY_PARAM);
-    window.history.replaceState({}, "", url.toString());
-  } catch {}
 }
 
 async function svgElementToPngDataUrl(svgEl, outputWidth = 1600) {
