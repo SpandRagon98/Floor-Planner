@@ -3,8 +3,20 @@ import {
   DEFAULT_KITCHEN_SLAB_DEPTH,
   DEFAULT_KITCHEN_SLAB_HEIGHT,
 } from "../constants/config";
-import { WALL_OPTIONS } from "../constants/presets";
+import { WALL_OPTIONS, FURNITURE_PRESETS, FURNITURE_PRODUCT_RECOMMENDATIONS } from "../constants/presets";
 import { clamp } from "./math";
+
+export function getFurnitureOptionsForCategory(category) {
+  return FURNITURE_PRESETS[category] || [];
+}
+
+export function getDefaultFurnitureSelection(category) {
+  return getFurnitureOptionsForCategory(category)[0]?.type || "";
+}
+
+export function getFurnitureRecommendationItems(furnitureType) {
+  return FURNITURE_PRODUCT_RECOMMENDATIONS[String(furnitureType || "").trim().toLowerCase()] || [];
+}
 
 export function isKitchenSlab(item) {
   return String(item?.type || "").toLowerCase() === "kitchen slab";
