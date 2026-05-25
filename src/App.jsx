@@ -31,86 +31,55 @@ import {
   PaintBucket,
 } from "lucide-react";
 
-const APPS_SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbyUU2af127lB7ICm_TTkMG8Cbyr_VR9mwWUuawQMiCxAy3yEIj0dO8B7CeKy9xM8FDq8Q/exec";
-const MAX_SYNC_ROOMS = 8;
-const DEFAULT_SCALE = 12;
-const DEFAULT_ROOM_HEIGHT = 9;
-const WALL_THICKNESS_FT = 0.4;
-const ROOM_THICKNESS_FT = 0.25;
-
-
-const ROOM_COLORS = [
-  "#eef4ff",
-  "#f4f7ec",
-  "#fff2e8",
-  "#f3efff",
-  "#e9fbf6",
-  "#fff7db",
-];
-
-const WALL_OPTIONS = ["top", "bottom", "left", "right"];
-const DEFAULT_DOOR_WIDTH = 3;
-const DEFAULT_DOOR_HEIGHT = 7;
-const DEFAULT_WINDOW_WIDTH = 4;
-const DEFAULT_WINDOW_HEIGHT = 3;
-const DEFAULT_WINDOW_SILL_HEIGHT = 3;
-
-const FURNITURE_WALL_CLEARANCE = 0.18;
-const DEFAULT_KITCHEN_SLAB_DEPTH = 2;
-const DEFAULT_KITCHEN_SLAB_HEIGHT = 3;
-
-const PRODUCT_CATEGORIES = [
-  "storage",
-  "office",
-  "cafe",
-  "house",
-  "public toilet",
-  "security cabin",
-];
-
-const PROJECTS_STORAGE_KEY = "floor-plan-generator-projects";
-const PROJECT_ID_QUERY_PARAM = "projectId";
-const VIEW_QUERY_PARAM = "view";
-const VIEWER_MODE_QUERY_PARAM = "viewer";
-const FLOOR_PLAN_OPENAI_KEY_STORAGE = "floor-plan-openai-api-key";
-const THEME_STORAGE_KEY = "floor-plan-generator-theme";
-const OPENAI_MODEL = "gpt-4.1-mini";
-const OPENAI_IMAGE_MODEL = "gpt-image-1";
-
-const DEFAULT_WALL_COLOR = "#7e8da3";
-const DEFAULT_FLOOR_TEXTURE_ID = "white-marble";
-const ASSISTANT_COLLAPSED_SESSION_KEY = "floor-plan-assistant-collapsed";
-const SUN_SETTINGS_SESSION_KEY = "floor-plan-sun-settings";
-const DEFAULT_SUN_SETTINGS = {
-  azimuth: 132,
-  elevation: 46,
-  intensity: 1.5,
-  color: "#fff3e0",
-  ambientIntensity: 0.55,
-};
-
-const FEATURE_UPLOAD_FLOOR_PLAN_ENABLED = false;
-const FEATURE_ASSISTANT_ENABLED = false;
-const FEATURE_AI_LANDING_ENABLED = false;
-const FEATURE_AUTO_ARRANGE_ENABLED = false;
-const FEATURE_AI_RENDER_ENABLED = false;
-const FEATURE_AI_ENABLED = false;
-const FEATURE_FURNITURE_RECOMMENDATIONS_ENABLED = false;
-const GOOGLE_SHEETS_INCLUDE_CAPTURED_IMAGES = true;
-
-// ─── Landing page prompts ─────────────────────────────────────────────────────
-
-const EXAMPLE_PROMPTS = [
-  "Design a 2BHK home in 40 by 30 feet",
-  "Create a modern office layout for 20 people",
-  "Plan a cozy cafe with seating for 30",
-  "Build a 1BHK apartment in 28 by 22 feet",
-  "Design a storage warehouse 50 by 40 feet",
-  "Create a public toilet block 20 by 15 feet",
-];
-
-const ASSET_BASE = (import.meta?.env?.BASE_URL || "/").replace(/\/?$/, "/");
+import {
+  APPS_SCRIPT_URL,
+  MAX_SYNC_ROOMS,
+  DEFAULT_SCALE,
+  DEFAULT_ROOM_HEIGHT,
+  WALL_THICKNESS_FT,
+  ROOM_THICKNESS_FT,
+  DEFAULT_DOOR_WIDTH,
+  DEFAULT_DOOR_HEIGHT,
+  DEFAULT_WINDOW_WIDTH,
+  DEFAULT_WINDOW_HEIGHT,
+  DEFAULT_WINDOW_SILL_HEIGHT,
+  FURNITURE_WALL_CLEARANCE,
+  DEFAULT_KITCHEN_SLAB_DEPTH,
+  DEFAULT_KITCHEN_SLAB_HEIGHT,
+  PROJECTS_STORAGE_KEY,
+  PROJECT_ID_QUERY_PARAM,
+  VIEW_QUERY_PARAM,
+  VIEWER_MODE_QUERY_PARAM,
+  FLOOR_PLAN_OPENAI_KEY_STORAGE,
+  THEME_STORAGE_KEY,
+  OPENAI_MODEL,
+  OPENAI_IMAGE_MODEL,
+  DEFAULT_WALL_COLOR,
+  DEFAULT_FLOOR_TEXTURE_ID,
+  ASSISTANT_COLLAPSED_SESSION_KEY,
+  SUN_SETTINGS_SESSION_KEY,
+  DEFAULT_SUN_SETTINGS,
+  FEATURE_UPLOAD_FLOOR_PLAN_ENABLED,
+  FEATURE_ASSISTANT_ENABLED,
+  FEATURE_AI_LANDING_ENABLED,
+  FEATURE_AUTO_ARRANGE_ENABLED,
+  FEATURE_AI_RENDER_ENABLED,
+  FEATURE_AI_ENABLED,
+  FEATURE_FURNITURE_RECOMMENDATIONS_ENABLED,
+  GOOGLE_SHEETS_INCLUDE_CAPTURED_IMAGES,
+  EXAMPLE_PROMPTS,
+  ASSET_BASE,
+} from "./constants/config";
+import {
+  ROOM_COLORS,
+  WALL_OPTIONS,
+  PRODUCT_CATEGORIES,
+  FLOOR_TEXTURE_LIBRARY,
+  FURNITURE_PRODUCT_RECOMMENDATIONS,
+  TOILET_SEAT_FURNITURE,
+  EXTRA_FURNITURE,
+  FURNITURE_PRESETS,
+} from "./constants/presets";
 
 function resolveAssetPath(path) {
   const raw = String(path || "").trim();
@@ -119,150 +88,6 @@ function resolveAssetPath(path) {
   const cleaned = raw.replace(/^\/+/, "");
   return `${ASSET_BASE}${cleaned}`;
 }
-
-const FLOOR_TEXTURE_LIBRARY = [
-  {
-    id: "white-marble",
-    name: "White Marble",
-    image: "textures/white-marble.png",
-    tileWidth: 2,
-    tileHeight: 2,
-    category: "marble",
-  },
-  {
-    id: "beige-marble",
-    name: "Beige Marble",
-    image: "textures/beige-marble.png",
-    tileWidth: 2,
-    tileHeight: 2,
-    category: "marble",
-  },
-  {
-    id: "grey-concrete",
-    name: "Grey Concrete Tile",
-    image: "textures/grey-concrete-tile.png",
-    tileWidth: 2,
-    tileHeight: 2,
-    category: "concrete",
-  },
-  {
-    id: "wood-floor",
-    name: "Wood Floor",
-    image: "textures/wood-floor.png",
-    tileWidth: 0.6,
-    tileHeight: 3,
-    category: "wood",
-  },
-  {
-    id: "patterned-tile",
-    name: "Patterned Tile",
-    image: "textures/patterned-tile.png",
-    tileWidth: 1,
-    tileHeight: 1,
-    category: "decorative",
-  },
-  {
-    id: "glossy-cream",
-    name: "Glossy Cream Tile",
-    image: "textures/glossy-cream-tile.png",
-    tileWidth: 2,
-    tileHeight: 2,
-    category: "ceramic",
-  },
-];
-
-const FURNITURE_PRODUCT_RECOMMENDATIONS = {
-  "bed (single / double)": [
-    {
-      id: "tree-mart-bed",
-      title: "TREE MART Wooden King Size Bed with Storage",
-      price: "₹25,999",
-      url: "https://www.amazon.in/TREE-MART-Sheesham-Recommended-Mattress/dp/B0F3P9LWTY",
-      image: "products/bed-wooden.jpg",
-    },
-    {
-      id: "designfit-bed",
-      title: "DesignFit Engineered Wood King Size Bed with Box Storage",
-      price: "₹19,497",
-      url: "https://www.amazon.in/DesignFit-Engineered-Storage-Furniture-Warranty/dp/B0DXF3G56S",
-      image: "products/bed-black.jpg",
-    },
-    {
-      id: "royaloak-bed",
-      title: "Royaloak Luxe Queen Size Bed with Hydraulic Storage",
-      price: "₹38,999",
-      url: "https://www.amazon.in/dp/B0DSG85S7V",
-      image: "products/bed-ash.jpg",
-    },
-  ],
-};
-
-const TOILET_SEAT_FURNITURE = { type: "Toilet Seat (WC)", width: 2.5, depth: 4, height: 3, color: "#dbe7f2" };
-
-// Shared extra items appended to every category
-const EXTRA_FURNITURE = [
-  { type: "Steel Staircase", width: 4, depth: 8, height: 10, color: "#8a9ab5", allowOutsideBuilding: true },
-];
-
-const FURNITURE_PRESETS = {
-  storage: [
-    TOILET_SEAT_FURNITURE,
-    { type: "Storage Rack", width: 6, depth: 2, height: 7, color: "#c9d4e5" },
-    { type: "Pallet Stack", width: 4, depth: 4, height: 4, color: "#d9c3a2" },
-    { type: "Small Shelf Unit", width: 3, depth: 1.5, height: 5, color: "#cfd8c8" },
-    { type: "Heavy Duty Shelf", width: 8, depth: 2.5, height: 8, color: "#b8c4d7" },
-    { type: "Utility Table", width: 5, depth: 2.5, height: 3, color: "#ddd4c8" },
-    ...EXTRA_FURNITURE,
-  ],
-  office: [
-    TOILET_SEAT_FURNITURE,
-    { type: "Workstation Desk", width: 5, depth: 2.5, height: 2.5, color: "#d4dde8" },
-    { type: "Office Chair", width: 2, depth: 2, height: 3, color: "#bcc7d9" },
-    { type: "Conference Table", width: 8, depth: 4, height: 2.5, color: "#d8d1c5" },
-    { type: "Storage Cabinet", width: 4, depth: 1.5, height: 6, color: "#c7d0c0" },
-    { type: "Reception Desk", width: 7, depth: 3, height: 3.5, color: "#d7c8bf" },
-    ...EXTRA_FURNITURE,
-  ],
-  cafe: [
-    TOILET_SEAT_FURNITURE,
-    { type: "2-Seater Table", width: 2.5, depth: 2.5, height: 2.5, color: "#dfd2c2" },
-    { type: "4-Seater Table", width: 4, depth: 4, height: 2.5, color: "#d7cab8" },
-    { type: "Chair", width: 1.8, depth: 1.8, height: 3, color: "#c7b9ab" },
-    { type: "Service Counter / Cash Desk", width: 6, depth: 2.5, height: 3.5, color: "#d8c3b8" },
-    { type: "Display Unit", width: 4, depth: 2, height: 5, color: "#d3ddd5" },
-    ...EXTRA_FURNITURE,
-  ],
-  house: [
-    TOILET_SEAT_FURNITURE,
-    { type: "Bed (Single / Double)", width: 6.5, depth: 7, height: 2, color: "#d5dce8" },
-    { type: "Wardrobe", width: 5, depth: 2, height: 7, color: "#c7d0bf" },
-    { type: "Sofa", width: 7, depth: 3, height: 3, color: "#c8d6ea" },
-    { type: "Center Table", width: 4, depth: 2, height: 1.5, color: "#ddd3c5" },
-    { type: "Kitchen Counter", width: 8, depth: 2, height: 3, color: "#d4d8dc" },
-    { type: "Kitchen Slab", width: 8, depth: 2, height: 3, color: "#cfd6de", wallAttached: true },
-    { type: "Stove / Cooktop", width: 2.5, depth: 2, height: 2.8, color: "#c9c9cf" },
-    { type: "Sink", width: 2.5, depth: 2, height: 3, color: "#c5dbe5" },
-    { type: "Dining Table", width: 6, depth: 3.5, height: 2.5, color: "#d8ccb9" },
-    ...EXTRA_FURNITURE,
-  ],
-  "public toilet": [
-    TOILET_SEAT_FURNITURE,
-    { type: "Urinal", width: 2, depth: 1.5, height: 3.5, color: "#d8e7ef" },
-    { type: "Wash Basin", width: 2, depth: 1.5, height: 3, color: "#d9eef5" },
-    { type: "Mirror Panel", width: 3, depth: 0.3, height: 4, color: "#d3e7f8" },
-    { type: "Partition Wall", width: 3, depth: 0.3, height: 6.5, color: "#cfd4dd" },
-    ...EXTRA_FURNITURE,
-  ],
-  "security cabin": [
-    TOILET_SEAT_FURNITURE,
-    { type: "Guard Chair", width: 2, depth: 2, height: 3, color: "#bfc9d7" },
-    { type: "Small Desk", width: 4, depth: 2, height: 2.5, color: "#d7cdbf" },
-    { type: "Storage Shelf", width: 3, depth: 1.5, height: 6, color: "#c8d1c2" },
-    { type: "CCTV Monitor Unit", width: 3, depth: 1.5, height: 4, color: "#c9d3e4" },
-    { type: "Barrier Control Panel", width: 2.5, depth: 1.5, height: 3.5, color: "#d2c9be" },
-    ...EXTRA_FURNITURE,
-  ],
-};
 
 // ─── Pure helpers ────────────────────────────────────────────────────────────
 
