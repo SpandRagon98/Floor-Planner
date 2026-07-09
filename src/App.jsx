@@ -110,7 +110,18 @@ import ReadOnly3DViewerShell from "./pages/ReadOnly3DViewerShell";
 import { Opening2D, Furniture2D, computeFurnitureLabelOffsets } from "./components/2d/Floor2DComponents";
 import LandingPage from "./pages/LandingPage";
 import FurnitureManagerPage from "./pages/FurnitureManagerPage";
+import LiquidGlassPanel from "./components/ui/LiquidGlassPanel";
 import VariantSelectionPage from "./pages/VariantSelectionPage";
+
+// ─── Liquid glass (real refraction, gated by Settings → Glass mode) ───────────
+// The optics-only half lives in src/lib/liquidGlass.js; App.css still owns the
+// "material" (tint, border, inner highlight) via the existing glass-theme rules.
+const LIQUID_GLASS_SHARED = { chroma: 5, border: 0.08, mapBlur: 14, saturate: 1.6 };
+const LIQUID_GLASS_OPTIONS = {
+  modal:   { ...LIQUID_GLASS_SHARED, scale: -100, blur: 6, fallbackBlur: 26 },
+  toolbar: { ...LIQUID_GLASS_SHARED, scale: -85,  blur: 8, fallbackBlur: 28 },
+  card:    { ...LIQUID_GLASS_SHARED, scale: -70,  blur: 6, fallbackBlur: 18 },
+};
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
@@ -1486,7 +1497,13 @@ const handleGenerateLayout = async (prompt) => {
       {/* Settings Modal */}
       {isSettingsOpen && (
         <div className="project-modal-overlay" onClick={() => setIsSettingsOpen(false)}>
-          <div className="project-modal settings-modal" onClick={(e) => e.stopPropagation()}>
+          <LiquidGlassPanel
+            as="div"
+            enabled={uiSettings.glassMode}
+            options={LIQUID_GLASS_OPTIONS.modal}
+            className="project-modal settings-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="project-modal-header">
               <div><h3><Settings size={15} style={{ verticalAlign: "-2px", marginRight: 6 }} />Settings</h3><p>Personalize the look and feel of your workspace.</p></div>
               <button className="icon-btn" onClick={() => setIsSettingsOpen(false)} aria-label="Close settings"><X size={16} /></button>
@@ -1550,14 +1567,20 @@ const handleGenerateLayout = async (prompt) => {
                 </div>
               </div>
             </div>
-          </div>
+          </LiquidGlassPanel>
         </div>
       )}
 
       {/* Project Modal */}
       {isProjectModalOpen && (
         <div className="project-modal-overlay" onClick={() => setIsProjectModalOpen(false)}>
-          <div className="project-modal" onClick={(e) => e.stopPropagation()}>
+          <LiquidGlassPanel
+            as="div"
+            enabled={uiSettings.glassMode}
+            options={LIQUID_GLASS_OPTIONS.modal}
+            className="project-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="project-modal-header">
               <div><h3>Open Project</h3><p>Select a saved project to restore your design.</p></div>
               <button className="icon-btn" onClick={() => setIsProjectModalOpen(false)} aria-label="Close"><X size={16} /></button>
@@ -1579,7 +1602,7 @@ const handleGenerateLayout = async (prompt) => {
                 </div>
               )}
             </div>
-          </div>
+          </LiquidGlassPanel>
         </div>
       )}
 
@@ -1589,6 +1612,11 @@ const handleGenerateLayout = async (prompt) => {
           {/* Top Control */}
           <section className="top-control-card">
             <div className="top-control-grid top-control-grid--premium">
+              {/* Real refraction skipped here on purpose: this panel is always
+                  mounted and spans nearly the full width (~1400px+), which
+                  makes it by far the most expensive always-on liquid-glass
+                  surface. It keeps the existing CSS-only frosted look
+                  instead — see SKILL.md's sizing guidance. */}
               <div className="input-card top-input-card top-input-card--premium">
                 <div className="top-toolbar-row top-toolbar-row--header">
                   <div className="project-actions-card project-actions-card--toolbar input-card">
@@ -1696,14 +1724,19 @@ const handleGenerateLayout = async (prompt) => {
           </section>
           {/* Stats */}
           <section className="preview-stats-row">
-            <div className="summary-box stat-box"><span>Plan Size</span><strong>{totalWidth} × {totalHeight}</strong></div>
-            <div className="summary-box stat-box"><span>Total Rooms</span><strong>{placedRooms.length}</strong></div>
-            <div className="summary-box stat-box"><span>Room Area</span><strong>{totalRoomArea.toFixed(0)} sq ft</strong></div>
-            <div className="summary-box stat-box"><span>Space Utilization</span><strong>{utilization}%</strong></div>
+            <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Plan Size</span><strong>{totalWidth} × {totalHeight}</strong></LiquidGlassPanel>
+            <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Total Rooms</span><strong>{placedRooms.length}</strong></LiquidGlassPanel>
+            <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Room Area</span><strong>{totalRoomArea.toFixed(0)} sq ft</strong></LiquidGlassPanel>
+            <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Space Utilization</span><strong>{utilization}%</strong></LiquidGlassPanel>
           </section>
 
           {/* Floor selector */}
-          <section className="floor-bar input-card">
+          <LiquidGlassPanel
+            as="section"
+            enabled={uiSettings.glassMode}
+            options={LIQUID_GLASS_OPTIONS.toolbar}
+            className="floor-bar input-card"
+          >
             <div className="floor-bar-label">
               <Layers size={14} />
               <span>Floors</span>
@@ -1765,7 +1798,7 @@ const handleGenerateLayout = async (prompt) => {
                 </button>
               </div>
             )}
-          </section>
+          </LiquidGlassPanel>
 
           <div
             className={`workspace-content-grid${!FEATURE_ASSISTANT_ENABLED ? " workspace-content-grid--full" : ""}`}
@@ -2090,7 +2123,12 @@ const handleGenerateLayout = async (prompt) => {
                 </span>
               </div>
             ) : (
-              <aside className="chatbot-card input-card">
+              <LiquidGlassPanel
+                as="aside"
+                enabled={uiSettings.glassMode}
+                options={LIQUID_GLASS_OPTIONS.card}
+                className="chatbot-card input-card"
+              >
                 <div className="section-header chatbot-header">
                   <div className="chatbot-header-copy">
                     <h2><MessageSquare size={16} />Floor Plan Assistant</h2>
@@ -2136,7 +2174,7 @@ const handleGenerateLayout = async (prompt) => {
                     <button type="submit" className="primary-btn" disabled={isChatbotBusy}><Send size={16} />Apply</button>
                   </div>
                 </form>
-              </aside>
+              </LiquidGlassPanel>
             ))}
           </div>
         </main>
