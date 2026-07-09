@@ -1719,7 +1719,7 @@ button { appearance: none; -webkit-appearance: none; }
 .app-shell.glass-theme .project-actions-card,
 .app-shell.glass-theme .project-modal,
 .app-shell.glass-theme .floor-bar {
-  background: linear-gradient(150deg, rgba(255,255,255,0.46) 0%, rgba(255,255,255,0.28) 100%);
+  background: linear-gradient(150deg, rgba(255,255,255,0.56) 0%, rgba(255,255,255,0.38) 100%);
   border: 1px solid rgba(255,255,255,0.62);
   box-shadow:
     0 12px 42px rgba(10,24,72,0.10),
@@ -1789,7 +1789,7 @@ button { appearance: none; -webkit-appearance: none; }
 .app-shell.dark-theme.glass-theme .project-actions-card,
 .app-shell.dark-theme.glass-theme .project-modal,
 .app-shell.dark-theme.glass-theme .floor-bar {
-  background: linear-gradient(150deg, rgba(16,30,56,0.44) 0%, rgba(10,20,40,0.32) 100%);
+  background: linear-gradient(150deg, rgba(16,30,56,0.56) 0%, rgba(10,20,40,0.44) 100%);
   border: 1px solid rgba(120,160,230,0.20);
   box-shadow:
     0 14px 46px rgba(0,0,0,0.42),
@@ -1845,3 +1845,57 @@ button { appearance: none; -webkit-appearance: none; }
 .app-shell.dark-theme .settings-glass-copy strong { color: #ecf6ff; }
 .app-shell.dark-theme .settings-glass-copy span { color: #80a6c4; }
 .app-shell.dark-theme .settings-section-title { color: #6c92b4; }
+
+/* ── Glass mode text readability ──
+   Translucent panels sit over a colorful, refracted backdrop, so text needs a
+   contrast floor the normal themes don't: darker/lighter ink than the default
+   muted tones plus a hairline text-shadow that separates glyphs from whatever
+   drifts behind the glass. Keeps the material translucent — never opaque. */
+.app-shell.glass-theme,
+.app-shell.glass-theme .field input,
+.app-shell.glass-theme .field select,
+.app-shell.glass-theme .field textarea { color: #0b1830; }
+.app-shell.glass-theme h1,
+.app-shell.glass-theme h2,
+.app-shell.glass-theme h3,
+.app-shell.glass-theme .summary-box strong,
+.app-shell.glass-theme .floor-bar-label,
+.app-shell.glass-theme .settings-glass-copy strong,
+.app-shell.glass-theme .room-accordion-title {
+  color: #060f20;
+  text-shadow: 0 1px 2px rgba(255,255,255,0.45);
+}
+.app-shell.glass-theme .field label,
+.app-shell.glass-theme .summary-box span,
+.app-shell.glass-theme .top-input-brand-copy p,
+.app-shell.glass-theme .settings-section-title,
+.app-shell.glass-theme .settings-glass-copy span,
+.app-shell.glass-theme .project-item-subtext,
+.app-shell.glass-theme .room-accordion-meta {
+  color: #2e4460;
+  text-shadow: 0 1px 1px rgba(255,255,255,0.35);
+}
+.app-shell.dark-theme.glass-theme,
+.app-shell.dark-theme.glass-theme .field input,
+.app-shell.dark-theme.glass-theme .field select,
+.app-shell.dark-theme.glass-theme .field textarea { color: #dcebf8; }
+.app-shell.dark-theme.glass-theme h1,
+.app-shell.dark-theme.glass-theme h2,
+.app-shell.dark-theme.glass-theme h3,
+.app-shell.dark-theme.glass-theme .summary-box strong,
+.app-shell.dark-theme.glass-theme .floor-bar-label,
+.app-shell.dark-theme.glass-theme .settings-glass-copy strong,
+.app-shell.dark-theme.glass-theme .room-accordion-title {
+  color: #f4faff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.55);
+}
+.app-shell.dark-theme.glass-theme .field label,
+.app-shell.dark-theme.glass-theme .summary-box span,
+.app-shell.dark-theme.glass-theme .top-input-brand-copy p,
+.app-shell.dark-theme.glass-theme .settings-section-title,
+.app-shell.dark-theme.glass-theme .settings-glass-copy span,
+.app-shell.dark-theme.glass-theme .project-item-subtext,
+.app-shell.dark-theme.glass-theme .room-accordion-meta {
+  color: #a9c6de;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+}
