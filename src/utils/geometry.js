@@ -62,10 +62,10 @@ export function buildWallSegments(rooms, totalWidth, totalHeight) {
     addSegment("V", x + w, y, y + h, "room");
   });
 
-  addSegment("H", 0,           0, totalWidth,  "outer");
-  addSegment("H", totalHeight, 0, totalWidth,  "outer");
-  addSegment("V", 0,           0, totalHeight, "outer");
-  addSegment("V", totalWidth,  0, totalHeight, "outer");
+  // Total width/height only define the buildable land area — no automatic
+  // enclosing wall is generated around the whole plan.
+
+  if (!grouped.size) return [];
 
   const merged = [];
   for (const segments of grouped.values()) {

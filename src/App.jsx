@@ -29,6 +29,11 @@ import {
   ArrowLeft,
   ChevronUp,
   PaintBucket,
+  Settings,
+  Layers,
+  Copy,
+  Pencil,
+  Check,
 } from "lucide-react";
 
 import {
@@ -86,7 +91,7 @@ import { isKitchenSlab, getNormalizedFurnitureRotation, getRotatedFurnitureFootp
 import { normalizeDoor, normalizeWindow, normalizeCutout, normalizeRoom, getRoomOpenings } from "./utils/normalization";
 import { getOpeningLineSegment, getSegmentOpenings, buildWallSegments } from "./utils/geometry";
 import { createRoom, fitRoomsInGrid, getDefaultRooms } from "./utils/rooms";
-import { createProjectId, getDefaultProjectState, readProjectsFromStorage, writeProjectsToStorage } from "./storage/projects";
+import { createProjectId, createFloor, migrateProjectStateToFloors, getDefaultProjectState, readProjectsFromStorage, writeProjectsToStorage } from "./storage/projects";
 import { getProjectIdFromUrl, buildProjectShareUrl, getViewModeFromUrl, isReadOnlyViewerModeFromUrl, buildReadOnly3DViewerUrl, syncProjectIdToUrl } from "./storage/url";
 import { getFurnitureOptionsForCategory, getDefaultFurnitureSelection, getFurnitureRecommendationItems } from "./utils/furniture";
 import { getFriendlyCategoryName, extractPlanDimensions, makeDefaultDoorForRoom, makeDefaultWindowForRoom, createFurnitureFromPreset, getDefaultFurnitureForRoomName, createTemplateRoom, buildPresetTemplate, normalizeGeneratedRooms } from "./ai/presets";
@@ -97,6 +102,7 @@ import { resolveAssetPath } from "./utils/assets";
 import { svgElementToPngDataUrl } from "./utils/imageExport";
 import { createChatMessage, getSavedOpenAIApiKey, persistOpenAIApiKey } from "./utils/chat";
 import { useTheme } from "./hooks/useTheme";
+import { useUISettings, normalizeUISettings, ACCENT_OPTIONS } from "./hooks/useUISettings";
 import { useSunSettings } from "./hooks/useSunSettings";
 import { useAssistantCollapsed } from "./hooks/useAssistantCollapsed";
 import { Floor3DScene } from "./components/3d/Floor3DComponents";
@@ -126,7 +132,31 @@ export default function App() {
   const [roomHeight,        setRoomHeight]        = useState(DEFAULT_ROOM_HEIGHT);
   const [activeView,        setActiveView]        = useState("2d");
   const [selectedCategory,  setSelectedCategory]  = useState("house");
-  const [rooms,             setRooms]             = useState(() => getDefaultRooms(40, 10));
+
+  // ── Floors (multi-floor system) ──
+  // Each floor owns its rooms (rooms own their doors/windows/furniture).
+  const [floors,            setFloors]            = useState(() => [createFloor(0, getDefaultRooms(40, 10))]);
+  const [activeFloorId,     setActiveFloorId]     = useState(null);
+  const [floorViewMode3D,   setFloorViewMode3D]   = useState("all"); // "active" | "all"
+  const [renamingFloorId,   setRenamingFloorId]   = useState(null);
+  const [renamingFloorName, setRenamingFloorName] = useState("");
+
+  const activeFloor = floors.find((floor) => floor.id === activeFloorId) || floors[0];
+  const rooms = activeFloor?.rooms || [];
+
+  // Shim: every existing room operation keeps calling setRooms; writes land on the active floor.
+  const setRooms = useCallback((updater) => {
+    setFloors((prevFloors) => {
+      if (!prevFloors.length) return prevFloors;
+      const target = prevFloors.find((floor) => floor.id === activeFloorId) || prevFloors[0];
+      return prevFloors.map((floor) =>
+        floor.id === target.id
+          ? { ...floor, rooms: typeof updater === "function" ? updater(floor.rooms) : updater }
+          : floor
+      );
+    });
+  }, [activeFloorId]);
+
   const [furnitureSelections, setFurnitureSelections] = useState({});
   const [globalWallColor,   setGlobalWallColor]   = useState(DEFAULT_WALL_COLOR);
 
@@ -134,8 +164,11 @@ export default function App() {
   const [activePage, setActivePage] = useState("planner"); // "planner" | "furniture-manager"
   const [customPresetDimensions, setCustomPresetDimensions] = useState({});
 
-  // ── Theme ──
+  // ── Theme / UI settings ──
   const { theme, setTheme } = useTheme();
+  const { uiSettings, setUISettings } = useUISettings();
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const accentSwatch = (ACCENT_OPTIONS.find((option) => option.id === uiSettings.accent) || ACCENT_OPTIONS[0]).swatch;
 
   // ── Project state ──
   const [savedProjects,        setSavedProjects]        = useState([]);
@@ -178,15 +211,27 @@ export default function App() {
 
   // ─── Derived state ──────────────────────────────────────────────────────────
 
-  const placedRooms = useMemo(() =>
-    rooms.map((room) => normalizeRoom(room, Number(totalWidth), Number(totalHeight), Number(roomHeight))),
-    [rooms, totalWidth, totalHeight, roomHeight]
+  const floorsForView = useMemo(() =>
+    floors.map((floor, index) => {
+      const placed = (floor.rooms || []).map((room) =>
+        normalizeRoom(room, Number(totalWidth), Number(totalHeight), Number(roomHeight))
+      );
+      return {
+        ...floor,
+        level: index,
+        placedRooms: placed,
+        wallSegments: buildWallSegments(placed, Number(totalWidth), Number(totalHeight)),
+      };
+    }),
+    [floors, totalWidth, totalHeight, roomHeight]
   );
 
-  const wallSegments = useMemo(() =>
-    buildWallSegments(placedRooms, Number(totalWidth), Number(totalHeight)),
-    [placedRooms, totalWidth, totalHeight]
-  );
+  const activeFloorView = floorsForView.find((floor) => floor.id === activeFloor?.id) || floorsForView[0];
+  const placedRooms = activeFloorView?.placedRooms || [];
+  const wallSegments = activeFloorView?.wallSegments || [];
+  const floors3D = floorViewMode3D === "active" && activeFloorView
+    ? [{ ...activeFloorView, level: 0 }]
+    : floorsForView;
 
   const selectedFurnitureDetails = useMemo(() => {
     if (!FEATURE_FURNITURE_RECOMMENDATIONS_ENABLED) return null;
@@ -485,11 +530,17 @@ export default function App() {
     ai_render_image_base64: generatedRenderImage || "",
     totalWidth, totalHeight, wallThickness, roomThickness, scale, roomHeight,
     activeView, selectedCategory,
+    // "rooms" mirrors the active floor for backward compatibility with older builds.
     rooms, furnitureSelections,
+    floors,
+    activeFloorId: activeFloor?.id || null,
+    floorViewMode3D,
     customPresetDimensions,
     assistantCollapsed: FEATURE_ASSISTANT_ENABLED ? assistantCollapsed : true,
     sunSettings,
     globalWallColor,
+    theme,
+    uiSettings,
   });
 
   const applyProjectState = (projectState) => {
@@ -504,9 +555,22 @@ export default function App() {
     setRoomHeight(Number(nextState.roomHeight) || defaults.roomHeight);
     setActiveView(nextState.activeView === "3d" ? "3d" : "2d");
     setSelectedCategory(PRODUCT_CATEGORIES.includes(nextState.selectedCategory) ? nextState.selectedCategory : defaults.selectedCategory);
-    const nextRooms = Array.isArray(nextState.rooms) && nextState.rooms.length ? nextState.rooms : defaults.rooms;
-    setRooms(nextRooms);
+    // Multi-floor migration: old saves without floors land everything on Floor 1.
+    // Use the raw incoming state here — merging defaults first would inject the
+    // default floors and shadow a legacy save's plain rooms array.
+    const { floors: nextFloors, activeFloorId: nextActiveFloorId } = migrateProjectStateToFloors(projectState || defaults);
+    setFloors(nextFloors);
+    setActiveFloorId(nextActiveFloorId);
+    setFloorViewMode3D(nextState.floorViewMode3D === "active" ? "active" : "all");
+    setRenamingFloorId(null);
+    const nextRooms = (nextFloors.find((floor) => floor.id === nextActiveFloorId) || nextFloors[0])?.rooms || [];
     setExpandedRoomIds(Object.fromEntries(nextRooms.map((room) => [room.id, false])));
+    if (nextState.uiSettings && typeof nextState.uiSettings === "object") {
+      setUISettings(normalizeUISettings(nextState.uiSettings));
+    }
+    if (nextState.theme === "dark" || nextState.theme === "light") {
+      setTheme(nextState.theme);
+    }
     setFurnitureSelections(nextState.furnitureSelections && typeof nextState.furnitureSelections === "object" ? nextState.furnitureSelections : {});
     setCustomPresetDimensions(
       nextState.customPresetDimensions && typeof nextState.customPresetDimensions === "object"
@@ -549,7 +613,9 @@ export default function App() {
 
   const applyGeneratedPlan = (nextPlan, sourceLabel = "assistant") => {
     if (!nextPlan) return;
-    applyProjectState({ ...buildCurrentProjectData(), ...nextPlan, activeView, wallThickness, scale, roomHeight, furnitureSelections: {} });
+    // Drop current floors unless the plan carries its own, so generated rooms land on a fresh Floor 1.
+    const floorOverride = Array.isArray(nextPlan.floors) && nextPlan.floors.length ? {} : { floors: null, activeFloorId: null };
+    applyProjectState({ ...buildCurrentProjectData(), ...nextPlan, ...floorOverride, activeView, wallThickness, scale, roomHeight, furnitureSelections: {} });
     setProjectStatusMessage(`Applied ${sourceLabel} layout: ${nextPlan.planName || getFriendlyCategoryName(nextPlan.selectedCategory)}`);
   };
 
@@ -728,6 +794,51 @@ const handleGenerateLayout = async (prompt) => {
 
   const autoArrangeRooms = () => {
     setRooms(fitRoomsInGrid(rooms.map((r) => ({ ...r, width: Number(r.width), height: Number(r.height) })), Number(totalWidth), Number(totalHeight)));
+  };
+
+  // ─── Floor operations ────────────────────────────────────────────────────────
+
+  const addFloor = () => {
+    const newFloor = createFloor(floors.length, [{ ...createRoom(0), name: "Room 1" }]);
+    setFloors((prev) => [...prev, { ...newFloor, level: prev.length }]);
+    setActiveFloorId(newFloor.id);
+    setProjectStatusMessage(`Added ${newFloor.name}.`);
+  };
+
+  const renameFloor = (floorId, nextName) => {
+    const safeName = String(nextName || "").trim();
+    if (!safeName) { setRenamingFloorId(null); return; }
+    setFloors((prev) => prev.map((floor) => floor.id === floorId ? { ...floor, name: safeName } : floor));
+    setRenamingFloorId(null);
+  };
+
+  const duplicateFloor = (floorId) => {
+    const source = floors.find((floor) => floor.id === floorId);
+    if (!source) return;
+    const clonedRooms = (source.rooms || []).map((room) => ({
+      ...structuredClone(room),
+      id: crypto.randomUUID(),
+      furniture: (room.furniture || []).map((item) => ({ ...structuredClone(item), id: crypto.randomUUID() })),
+    }));
+    const cloned = createFloor(floors.length, clonedRooms, `${source.name} Copy`);
+    setFloors((prev) => [...prev, { ...cloned, level: prev.length }]);
+    setActiveFloorId(cloned.id);
+    setProjectStatusMessage(`Duplicated ${source.name}.`);
+  };
+
+  const deleteFloor = (floorId) => {
+    if (floors.length <= 1) return;
+    const target = floors.find((floor) => floor.id === floorId);
+    if (!target) return;
+    if (!window.confirm(`Delete "${target.name}" and all its rooms?`)) return;
+    setFloors((prev) => {
+      const remaining = prev.filter((floor) => floor.id !== floorId).map((floor, index) => ({ ...floor, level: index }));
+      if (floorId === (activeFloor?.id || activeFloorId)) {
+        setActiveFloorId(remaining[0]?.id || null);
+      }
+      return remaining;
+    });
+    setProjectStatusMessage(`Deleted ${target.name}.`);
   };
 
   const resetPlan = () => {
@@ -1245,7 +1356,11 @@ const handleGenerateLayout = async (prompt) => {
     const source = new XMLSerializer().serializeToString(svgEl);
     const url = URL.createObjectURL(new Blob([source], { type: "image/svg+xml;charset=utf-8" }));
     const link = document.createElement("a");
-    link.href = url; link.download = `${planName.replace(/\s+/g, "_").toLowerCase() || "floor-plan"}.svg`;
+    const baseName = planName.replace(/\s+/g, "_").toLowerCase() || "floor-plan";
+    const floorSuffix = floors.length > 1 && activeFloor?.name
+      ? `_${activeFloor.name.replace(/\s+/g, "_").toLowerCase()}`
+      : "";
+    link.href = url; link.download = `${baseName}${floorSuffix}.svg`;
     link.click(); URL.revokeObjectURL(url);
   };
 
@@ -1362,8 +1477,82 @@ const handleGenerateLayout = async (prompt) => {
   // ─── Main Planner render ─────────────────────────────────────────────────────
 
   return (
-    <div className={`app-shell ${theme === "dark" ? "dark-theme" : "light-theme"}`}>
+    <div
+      className={`app-shell ${theme === "dark" ? "dark-theme" : "light-theme"}${uiSettings.glassMode ? " glass-theme" : ""}`}
+      data-accent={uiSettings.accent}
+    >
       <input ref={fileUploadInputRef} type="file" accept="image/png,image/jpeg,image/jpg" style={{ display: "none" }} onChange={handleFloorPlanImageSelected} disabled={!FEATURE_UPLOAD_FLOOR_PLAN_ENABLED || !FEATURE_AI_ENABLED} />
+
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <div className="project-modal-overlay" onClick={() => setIsSettingsOpen(false)}>
+          <div className="project-modal settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="project-modal-header">
+              <div><h3><Settings size={15} style={{ verticalAlign: "-2px", marginRight: 6 }} />Settings</h3><p>Personalize the look and feel of your workspace.</p></div>
+              <button className="icon-btn" onClick={() => setIsSettingsOpen(false)} aria-label="Close settings"><X size={16} /></button>
+            </div>
+            <div className="project-modal-body settings-modal-body">
+              <div className="settings-section">
+                <div className="settings-section-title">Appearance</div>
+                <div className="settings-theme-row">
+                  <button
+                    type="button"
+                    className={`settings-theme-btn${theme === "light" ? " is-active" : ""}`}
+                    onClick={() => setTheme("light")}
+                  >
+                    <Sun size={14} />Light
+                  </button>
+                  <button
+                    type="button"
+                    className={`settings-theme-btn${theme === "dark" ? " is-active" : ""}`}
+                    onClick={() => setTheme("dark")}
+                  >
+                    <Moon size={14} />Dark
+                  </button>
+                </div>
+              </div>
+
+              <div className="settings-section">
+                <div className="settings-section-title">Accent Color</div>
+                <div className="settings-accent-row">
+                  {ACCENT_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`settings-accent-swatch${uiSettings.accent === option.id ? " is-active" : ""}`}
+                      style={{ background: option.swatch }}
+                      title={option.label}
+                      aria-label={`${option.label} accent`}
+                      onClick={() => setUISettings((prev) => ({ ...prev, accent: option.id }))}
+                    >
+                      {uiSettings.accent === option.id && <Check size={13} strokeWidth={3} />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="settings-section">
+                <div className="settings-section-title">Liquid Glass Theme</div>
+                <div className="settings-glass-row">
+                  <div className="settings-glass-copy">
+                    <strong>Glass mode</strong>
+                    <span>Translucent, blurred, layered panels inspired by Apple's liquid glass design.</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={uiSettings.glassMode}
+                    className={`settings-switch${uiSettings.glassMode ? " is-on" : ""}`}
+                    onClick={() => setUISettings((prev) => ({ ...prev, glassMode: !prev.glassMode }))}
+                  >
+                    <span className="settings-switch-thumb" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Project Modal */}
       {isProjectModalOpen && (
@@ -1462,6 +1651,9 @@ const handleGenerateLayout = async (prompt) => {
                         <span className={`theme-toggle-option ${theme === "light" ? "is-active" : ""}`}><Sun size={12} />Light</span>
                         <span className={`theme-toggle-option ${theme === "dark"  ? "is-active" : ""}`}><Moon size={12} />Dark</span>
                       </button>
+                      <button type="button" className="secondary-btn settings-open-btn" onClick={() => setIsSettingsOpen(true)} aria-label="Open settings">
+                        <Settings size={14} />Settings
+                      </button>
                     </div>
                     {projectStatusMessage && (
                       <div className="project-status-banner project-status-banner--inline">{projectStatusMessage}</div>
@@ -1508,6 +1700,71 @@ const handleGenerateLayout = async (prompt) => {
             <div className="summary-box stat-box"><span>Total Rooms</span><strong>{placedRooms.length}</strong></div>
             <div className="summary-box stat-box"><span>Room Area</span><strong>{totalRoomArea.toFixed(0)} sq ft</strong></div>
             <div className="summary-box stat-box"><span>Space Utilization</span><strong>{utilization}%</strong></div>
+          </section>
+
+          {/* Floor selector */}
+          <section className="floor-bar input-card">
+            <div className="floor-bar-label">
+              <Layers size={14} />
+              <span>Floors</span>
+              <span className="floor-bar-count">{floors.length}</span>
+            </div>
+            <div className="floor-bar-chips">
+              {floors.map((floor) => {
+                const isActiveChip = floor.id === activeFloor?.id;
+                const isRenaming = renamingFloorId === floor.id;
+                return (
+                  <div key={floor.id} className={`floor-chip${isActiveChip ? " is-active" : ""}`}>
+                    {isRenaming ? (
+                      <input
+                        className="floor-chip-rename-input"
+                        value={renamingFloorName}
+                        autoFocus
+                        onChange={(e) => setRenamingFloorName(e.target.value)}
+                        onBlur={() => renameFloor(floor.id, renamingFloorName)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") renameFloor(floor.id, renamingFloorName);
+                          if (e.key === "Escape") setRenamingFloorId(null);
+                        }}
+                      />
+                    ) : (
+                      <button type="button" className="floor-chip-name" onClick={() => setActiveFloorId(floor.id)}>
+                        {floor.name}
+                        <span className="floor-chip-meta">{(floor.rooms || []).length}</span>
+                      </button>
+                    )}
+                    {isActiveChip && !isRenaming && (
+                      <span className="floor-chip-actions">
+                        <button type="button" className="floor-chip-action" title="Rename floor" onClick={() => { setRenamingFloorId(floor.id); setRenamingFloorName(floor.name); }}><Pencil size={11} /></button>
+                        <button type="button" className="floor-chip-action" title="Duplicate floor" onClick={() => duplicateFloor(floor.id)}><Copy size={11} /></button>
+                        <button type="button" className="floor-chip-action floor-chip-action--danger" title="Delete floor" disabled={floors.length <= 1} onClick={() => deleteFloor(floor.id)}><Trash2 size={11} /></button>
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              <button type="button" className="floor-chip floor-chip--add" onClick={addFloor}>
+                <Plus size={13} />Add Floor
+              </button>
+            </div>
+            {activeView === "3d" && (
+              <div className="floor-view-toggle">
+                <button
+                  type="button"
+                  className={`floor-view-toggle-option${floorViewMode3D === "active" ? " is-active" : ""}`}
+                  onClick={() => setFloorViewMode3D("active")}
+                >
+                  Active Floor
+                </button>
+                <button
+                  type="button"
+                  className={`floor-view-toggle-option${floorViewMode3D === "all" ? " is-active" : ""}`}
+                  onClick={() => setFloorViewMode3D("all")}
+                >
+                  All Floors
+                </button>
+              </div>
+            )}
           </section>
 
           <div
@@ -1566,7 +1823,8 @@ const handleGenerateLayout = async (prompt) => {
                       <rect width={svgWidth} height={svgHeight} fill="#ffffff" />
                       <g transform="translate(60,60)">
                         <rect width={canvasWidth} height={canvasHeight} fill="url(#grid)" />
-                        <rect x={0} y={0} width={canvasWidth} height={canvasHeight} fill="none" stroke="#5f6f86" strokeWidth={Math.max(3, numericWallThickness * numericScale)} />
+                        {/* Land / buildable area outline — dashed marker only, not a wall */}
+                        <rect x={0} y={0} width={canvasWidth} height={canvasHeight} fill="none" stroke="#9fb3cf" strokeWidth={1.6} strokeDasharray="10 6" />
 
                         {placedRooms.map((room) => {
                           const x = room.x * numericScale, y = room.y * numericScale;
@@ -1783,7 +2041,8 @@ const handleGenerateLayout = async (prompt) => {
                       gl={{ preserveDrawingBuffer: true, antialias: renderQuality === "high", powerPreference: renderQuality === "high" ? "high-performance" : "default" }}
                       onCreated={({ gl, scene, camera }) => { threeSceneStateRef.current = { gl, scene, camera }; }}
                       camera={{ position: [Math.max(Number(totalWidth) * 0.85, 14), Math.max(Number(roomHeight) * 2.2, 16), Math.max(Number(totalHeight) * 1.0, 14)], fov: 42 }}>
-                      <Floor3DScene rooms={placedRooms} totalWidth={Number(totalWidth)} totalHeight={Number(totalHeight)}
+                      <Floor3DScene rooms={placedRooms} floors={floors3D} activeFloorId={activeFloor?.id} accentColor={accentSwatch}
+                        totalWidth={Number(totalWidth)} totalHeight={Number(totalHeight)}
                         wallThickness={Number(wallThickness)} roomThickness={Number(roomThickness)} roomHeight={Number(roomHeight)} wallSegments={wallSegments}
                         selectedFurnitureKey={selectedFurnitureKey} onFurnitureSelect={handleFurnitureSelection}
                         sunSettings={sunSettings} globalWallColor={globalWallColor} orbitControlsRef={orbitControlsRef} renderQuality={renderQuality} />
@@ -1896,7 +2155,16 @@ const handleGenerateLayout = async (prompt) => {
           </div>
 
           <div className="room-list room-list--sidebar">
-            {rooms.map((room, index) => {
+            {floors.map((floor) => {
+              const isActiveGroup = floor.id === activeFloor?.id;
+              return (
+                <div key={floor.id} className={`sidebar-floor-group${isActiveGroup ? " is-active" : ""}`}>
+                  <button type="button" className="sidebar-floor-header" onClick={() => setActiveFloorId(floor.id)}>
+                    <Layers size={13} />
+                    <span className="sidebar-floor-header-name">{floor.name}</span>
+                    <span className="sidebar-floor-header-meta">{(floor.rooms || []).length} {(floor.rooms || []).length === 1 ? "room" : "rooms"}</span>
+                  </button>
+                  {isActiveGroup && rooms.map((room, index) => {
               const roomFurnitureSelection = furnitureSelections[room.id] || getDefaultFurnitureSelection(selectedCategory);
               const isExpanded = expandedRoomIds[room.id] !== false;
 
@@ -1951,7 +2219,7 @@ const handleGenerateLayout = async (prompt) => {
                                 textAlign: "left",
                                 padding: 8,
                                 borderRadius: 12,
-                                border: isActive ? "2px solid #3b82f6" : "1px solid rgba(148,163,184,0.25)",
+                                border: isActive ? "2px solid var(--accent)" : "1px solid rgba(148,163,184,0.25)",
                                 background: "transparent",
                                 cursor: "pointer",
                               }}
@@ -1975,7 +2243,7 @@ const handleGenerateLayout = async (prompt) => {
                       </div>
 
                       {/* Tile size slider */}
-                      <div style={{ marginTop: 10, padding: "10px 12px", background: "rgba(59,130,246,0.05)", borderRadius: 8, border: "1px solid rgba(59,130,246,0.12)" }}>
+                      <div style={{ marginTop: 10, padding: "10px 12px", background: "var(--accent-soft)", borderRadius: 8, border: "1px solid var(--accent-ring)" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                           <label style={{ fontSize: 12, fontWeight: 600, opacity: 0.75, margin: 0 }}>
                             Tile Size — {Number(room.floorTileScale || 1).toFixed(2)}×
@@ -1994,7 +2262,7 @@ const handleGenerateLayout = async (prompt) => {
                           min="0.25" max="4" step="0.25"
                           value={room.floorTileScale || 1}
                           onChange={(e) => updateRoom(room.id, "floorTileScale", Number(e.target.value))}
-                          style={{ width: "100%", accentColor: "#3b82f6" }}
+                          style={{ width: "100%", accentColor: "var(--accent)" }}
                         />
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, opacity: 0.55, marginTop: 2 }}>
                           <span>0.25× small</span><span>1×</span><span>4× large</span>
@@ -2105,7 +2373,7 @@ const handleGenerateLayout = async (prompt) => {
                                   </div>
 
                                   {/* Rotation control */}
-                                  <div style={{ marginTop: 8, padding: "10px 12px", background: "rgba(59,130,246,0.06)", borderRadius: 8, border: "1px solid rgba(59,130,246,0.15)" }}>
+                                  <div style={{ marginTop: 8, padding: "10px 12px", background: "var(--accent-soft)", borderRadius: 8, border: "1px solid var(--accent-ring)" }}>
                                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                                       <label style={{ fontSize: 12, fontWeight: 600, opacity: 0.75, margin: 0 }}>
                                         Rotation — {itemRotation}°
@@ -2124,7 +2392,7 @@ const handleGenerateLayout = async (prompt) => {
                                       type="range"
                                       min="0" max="360" step="5"
                                       value={itemRotation}
-                                      style={{ width: "100%", marginBottom: 8, accentColor: "#3b82f6" }}
+                                      style={{ width: "100%", marginBottom: 8, accentColor: "var(--accent)" }}
                                       onChange={(e) => updateFurniture(room.id, item.id, "rotation", e.target.value)}
                                     />
                                     <div style={{ display: "flex", gap: 4 }}>
@@ -2164,6 +2432,9 @@ const handleGenerateLayout = async (prompt) => {
                       </div>
                     </div>
                   )}
+                </div>
+              );
+            })}
                 </div>
               );
             })}

@@ -2,7 +2,9 @@
 import { OrbitControls, Grid, Text as DreiText } from "@react-three/drei";
 import * as THREE from "three";
 import {
+  DEFAULT_DOOR_WIDTH,
   DEFAULT_DOOR_HEIGHT,
+  DEFAULT_WINDOW_WIDTH,
   DEFAULT_WINDOW_HEIGHT,
   DEFAULT_WINDOW_SILL_HEIGHT,
   DEFAULT_WALL_COLOR,
@@ -18,6 +20,7 @@ import { getRoomOpenings } from "../../utils/normalization";
 import { getFurnitureRecommendationItems } from "../../utils/furniture";
 import { getFloorTextureById } from "../../utils/textures";
 import { resolveAssetPath } from "../../utils/assets";
+import { loadSharedTexture, getCachedTexture } from "../../utils/textureCache";
 
 // ─── 3D Wall ─────────────────────────────────────────────────────────────────
 
@@ -102,52 +105,40 @@ function WallMesh({ segment, wallThickness, height, rooms, globalWallColor }) {
 function RoomFloor3D({ room, isLowQuality = false }) {
   const textureMeta = getFloorTextureById(room.floorTextureId);
   const resolvedTexturePath = useMemo(() => resolveAssetPath(textureMeta.image), [textureMeta.image]);
-  const [textureLoadFailed, setTextureLoadFailed] = useState(false);
-  const [baseTexture, setBaseTexture] = useState(null);
+  // Seed from the shared cache so texture switches never flash the fallback color.
+  const [baseTexture, setBaseTexture] = useState(() => getCachedTexture(resolvedTexturePath));
 
   useEffect(() => {
     let isCancelled = false;
-    setTextureLoadFailed(false);
-    setBaseTexture(null);
-
-    if (isLowQuality || !resolvedTexturePath) {
-      setTextureLoadFailed(true);
+    const cached = getCachedTexture(resolvedTexturePath);
+    if (cached) {
+      setBaseTexture(cached);
       return undefined;
     }
-
-    const loader = new THREE.TextureLoader();
-    loader.load(
-      resolvedTexturePath,
-      (loadedTexture) => {
-        if (isCancelled) return;
-        setBaseTexture(loadedTexture);
-      },
-      undefined,
-      () => {
-        if (isCancelled) return;
-        setTextureLoadFailed(true);
-      }
-    );
-
+    loadSharedTexture(resolvedTexturePath)
+      .then((texture) => { if (!isCancelled) setBaseTexture(texture); })
+      .catch(() => { if (!isCancelled) setBaseTexture(null); });
     return () => {
       isCancelled = true;
     };
-  }, [resolvedTexturePath, isLowQuality]);
+  }, [resolvedTexturePath]);
 
   const preparedTexture = useMemo(() => {
-    if (isLowQuality || !baseTexture || textureLoadFailed) return null;
+    if (!baseTexture) return null;
     const next = baseTexture.clone();
     next.wrapS = THREE.RepeatWrapping;
     next.wrapT = THREE.RepeatWrapping;
     const tileScale = Math.max(0.25, Math.min(4, Number(room.floorTileScale) || 1));
+    const tileWidth = Math.max(0.1, Number(textureMeta.tileWidth) || 1) * tileScale;
+    const tileHeight = Math.max(0.1, Number(textureMeta.tileHeight) || 1) * tileScale;
     next.repeat.set(
-      Math.max(0.25, (Number(room.width) || 1) / (Number(textureMeta.tileWidth) || 1) / tileScale),
-      Math.max(0.25, (Number(room.height) || 1) / (Number(textureMeta.tileHeight) || 1) / tileScale)
+      Math.max(0.05, (Number(room.width) || 1) / tileWidth),
+      Math.max(0.05, (Number(room.height) || 1) / tileHeight)
     );
-    next.anisotropy = 8;
+    next.anisotropy = isLowQuality ? 1 : 8;
     next.needsUpdate = true;
     return next;
-  }, [baseTexture, textureLoadFailed, room.width, room.height, textureMeta.tileWidth, textureMeta.tileHeight, room.floorTileScale, isLowQuality]);
+  }, [baseTexture, room.width, room.height, textureMeta.tileWidth, textureMeta.tileHeight, room.floorTileScale, isLowQuality]);
 
   useEffect(() => () => {
     preparedTexture?.dispose?.();
@@ -787,8 +778,133 @@ function Furniture3D({ room, furnitureItem, isSelected = false, onSelect, isLowQ
 
 // ─── 3D Scene ─────────────────────────────────────────────────────────────────
 
+const FLOOR_SLAB_THICKNESS = 0.55;
+
+// Renders one floor level's full content (room floors, labels, furniture,
+// walls, doors, windows). Positioned by the parent group at its stack height.
+function FloorLevel3D({
+  floor,
+  level,
+  wallHeight,
+  wt,
+  rt,
+  selectedFurnitureKey,
+  onFurnitureSelect,
+  globalWallColor,
+  isLowQuality,
+}) {
+  const rooms = floor.placedRooms || floor.rooms || [];
+  const wallSegments = floor.wallSegments || [];
+
+  return (
+    <group>
+      {rooms.map((room) => {
+        const x = Number(room.x) || 0;
+        const z = Number(room.y) || 0;
+        const w = Math.max(Number(room.width) || 0, 0.2);
+        const d = Math.max(Number(room.height) || 0, 0.2);
+        return (
+          <group key={room.id}>
+            {level > 0 && (
+              <mesh castShadow={!isLowQuality} receiveShadow={!isLowQuality} position={[x + w / 2, -FLOOR_SLAB_THICKNESS / 2, z + d / 2]}>
+                <boxGeometry args={[w, FLOOR_SLAB_THICKNESS, d]} />
+                <meshStandardMaterial color="#c9d2dd" roughness={0.9} metalness={0.03} />
+              </mesh>
+            )}
+            <RoomFloor3D room={room} isLowQuality={isLowQuality} />
+            <DreiText
+              position={[x + w / 2, 0.12, z + d / 2]}
+              fontSize={0.52}
+              color="#162033"
+              anchorX="center"
+              anchorY="middle"
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
+              {room.name || "Room"}
+            </DreiText>
+            <DreiText
+              position={[x + w / 2, 0.12, z + d / 2 + 0.95]}
+              fontSize={0.34}
+              color="#445065"
+              anchorX="center"
+              anchorY="middle"
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
+              {`${w} ft × ${d} ft`}
+            </DreiText>
+
+            {(room.furniture || []).map((item) => (
+              <Furniture3D
+                key={item.id}
+                room={room}
+                furnitureItem={item}
+                isSelected={selectedFurnitureKey === `${room.id}-${item.id}`}
+                onSelect={(sel) => onFurnitureSelect?.(room, sel)}
+                isLowQuality={isLowQuality}
+              />
+            ))}
+          </group>
+        );
+      })}
+
+      {wallSegments.map((segment, index) => (
+        <WallMesh
+          key={index}
+          segment={segment}
+          wallThickness={segment.type === "outer" ? wt : rt}
+          height={wallHeight}
+          rooms={rooms}
+          globalWallColor={globalWallColor}
+        />
+      ))}
+
+      {rooms.map((room) => {
+        const { doors, windows } = getRoomOpenings(room, wallHeight);
+        return (
+          <group key={`openings-3d-${room.id}`}>
+            {doors.map((door, idx) => (
+              <Door3D key={`door-3d-${room.id}-${idx}`} room={room} door={door} wallThickness={wt} />
+            ))}
+            {windows.map((win, idx) => (
+              <Window3D key={`window-3d-${room.id}-${idx}`} room={room} windowItem={win} wallThickness={wt} />
+            ))}
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+// Thin accent frame marking the active floor level when several floors are shown.
+function ActiveFloorFrame({ totalWidth, totalHeight, color }) {
+  const bar = 0.14;
+  return (
+    <group>
+      <mesh position={[totalWidth / 2, 0.02, -bar / 2]}>
+        <boxGeometry args={[totalWidth + bar * 2, 0.06, bar]} />
+        <meshBasicMaterial color={color} transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[totalWidth / 2, 0.02, totalHeight + bar / 2]}>
+        <boxGeometry args={[totalWidth + bar * 2, 0.06, bar]} />
+        <meshBasicMaterial color={color} transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[-bar / 2, 0.02, totalHeight / 2]}>
+        <boxGeometry args={[bar, 0.06, totalHeight]} />
+        <meshBasicMaterial color={color} transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[totalWidth + bar / 2, 0.02, totalHeight / 2]}>
+        <boxGeometry args={[bar, 0.06, totalHeight]} />
+        <meshBasicMaterial color={color} transparent opacity={0.9} />
+      </mesh>
+    </group>
+  );
+}
+
 function Floor3DScene({
   rooms,
+  floors,
+  activeFloorId,
+  accentColor = "#2563eb",
   totalWidth,
   totalHeight,
   wallThickness,
@@ -804,13 +920,27 @@ function Floor3DScene({
 }) {
   const centerX = totalWidth / 2;
   const centerZ = totalHeight / 2;
-   const wt = Math.max(0.22, Number(wallThickness) || WALL_THICKNESS_FT);
+  const wt = Math.max(0.22, Number(wallThickness) || WALL_THICKNESS_FT);
   const rt = Math.max(0.12, Number(roomThickness) || ROOM_THICKNESS_FT);
   const h = Math.max(8, Number(roomHeight) || DEFAULT_ROOM_HEIGHT);
   const safeSun = { ...DEFAULT_SUN_SETTINGS, ...(sunSettings || {}) };
-  const sunPos = getSunPosition(safeSun.azimuth, safeSun.elevation, Math.max(totalWidth, totalHeight) * 1.8, centerX, centerZ);
   const shadowCamExtent = Math.max(totalWidth, totalHeight) * 2;
   const isLowQuality = renderQuality === "low";
+
+  // Accept either the new multi-floor prop or the legacy single-floor props.
+  const floorsToRender = Array.isArray(floors) && floors.length
+    ? floors
+    : [{ id: "legacy-floor", level: 0, placedRooms: rooms || [], wallSegments: wallSegments || [] }];
+  const levelHeight = h + FLOOR_SLAB_THICKNESS;
+  const stackTop = floorsToRender.length * levelHeight;
+  const sunPos = getSunPosition(
+    safeSun.azimuth,
+    safeSun.elevation,
+    Math.max(totalWidth, totalHeight, stackTop) * 1.8,
+    centerX,
+    centerZ
+  );
+  const showActiveFrame = floorsToRender.length > 1;
 
   return (
     <>
@@ -849,75 +979,42 @@ function Floor3DScene({
           position={[centerX, 0, centerZ]}
         />
       )}
+      {/* Land / buildable plot area — grid surface only, no enclosing walls */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[centerX, -0.02, centerZ]} receiveShadow>
         <planeGeometry args={[totalWidth, totalHeight]} />
         <meshStandardMaterial color="#e7ebf0" roughness={0.93} metalness={0.04} />
       </mesh>
 
-      {rooms.map((room) => {
-        const x = Number(room.x) || 0;
-        const z = Number(room.y) || 0;
-        const w = Math.max(Number(room.width) || 0, 0.2);
-        const d = Math.max(Number(room.height) || 0, 0.2);
+      {floorsToRender.map((floor, index) => {
+        const level = Number.isFinite(Number(floor.level)) ? Number(floor.level) : index;
+        const baseY = level * levelHeight;
         return (
-          <group key={room.id}>
-            <RoomFloor3D key={`${room.id}-${room.floorTextureId || ""}-${room.floorTileScale || 1}-${renderQuality}`} room={room} isLowQuality={isLowQuality} />
-            <DreiText
-              position={[x + w / 2, 0.12, z + d / 2]}
-              fontSize={0.52}
-              color="#162033"
-              anchorX="center"
-              anchorY="middle"
-              rotation={[-Math.PI / 2, 0, 0]}
-            >
-              {room.name || "Room"}
-            </DreiText>
-            <DreiText
-              position={[x + w / 2, 0.12, z + d / 2 + 0.95]}
-              fontSize={0.34}
-              color="#445065"
-              anchorX="center"
-              anchorY="middle"
-              rotation={[-Math.PI / 2, 0, 0]}
-            >
-              {`${w} ft × ${d} ft`}
-            </DreiText>
-
-            {(room.furniture || []).map((item) => (
-              <Furniture3D
-                key={item.id}
-                room={room}
-                furnitureItem={item}
-                isSelected={selectedFurnitureKey === `${room.id}-${item.id}`}
-                onSelect={(sel) => onFurnitureSelect?.(room, sel)}
-                isLowQuality={isLowQuality}
-              />
-            ))}
-          </group>
-        );
-      })}
-
-            {(wallSegments || []).map((segment, index) => (
-        <WallMesh
-          key={index}
-          segment={segment}
-          wallThickness={segment.type === "outer" ? wt : rt}
-          height={h}
-          rooms={rooms}
-          globalWallColor={globalWallColor}
-        />
-      ))}
-
-      {rooms.map((room) => {
-        const { doors, windows } = getRoomOpenings(room, h);
-        return (
-          <group key={`openings-3d-${room.id}`}>
-            {doors.map((door, idx) => (
-              <Door3D key={`door-3d-${room.id}-${idx}`} room={room} door={door} wallThickness={wt} />
-            ))}
-            {windows.map((win, idx) => (
-              <Window3D key={`window-3d-${room.id}-${idx}`} room={room} windowItem={win} wallThickness={wt} />
-            ))}
+          <group key={floor.id || index} position={[0, baseY, 0]}>
+            {showActiveFrame && floor.id === activeFloorId && (
+              <ActiveFloorFrame totalWidth={totalWidth} totalHeight={totalHeight} color={accentColor} />
+            )}
+            {floorsToRender.length > 1 && (
+              <DreiText
+                position={[-1.6, 1.2, -1.2]}
+                fontSize={0.72}
+                color={floor.id === activeFloorId ? accentColor : "#64748b"}
+                anchorX="right"
+                anchorY="middle"
+              >
+                {floor.name || `Level ${level + 1}`}
+              </DreiText>
+            )}
+            <FloorLevel3D
+              floor={floor}
+              level={level}
+              wallHeight={h}
+              wt={wt}
+              rt={rt}
+              selectedFurnitureKey={selectedFurnitureKey}
+              onFurnitureSelect={onFurnitureSelect}
+              globalWallColor={globalWallColor}
+              isLowQuality={isLowQuality}
+            />
           </group>
         );
       })}
@@ -936,9 +1033,9 @@ function Floor3DScene({
         enableZoom
         enableRotate
         minDistance={12}
-        maxDistance={160}
+        maxDistance={200}
         maxPolarAngle={Math.PI / 2.08}
-        target={[centerX, 0, centerZ]}
+        target={[centerX, Math.min(stackTop * 0.28, h), centerZ]}
       />
     </>
   );
