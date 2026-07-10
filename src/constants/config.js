@@ -41,7 +41,10 @@ export const FEATURE_UPLOAD_FLOOR_PLAN_ENABLED = false;
 export const FEATURE_ASSISTANT_ENABLED = false;
 export const FEATURE_AI_LANDING_ENABLED = false;
 export const FEATURE_AUTO_ARRANGE_ENABLED = false;
-export const FEATURE_AI_RENDER_ENABLED = false;
+// AI Render is enabled on its own — it no longer requires the master
+// FEATURE_AI_ENABLED switch (which also gates landing/assistant/upload flows
+// that stay off). The OpenAI key is user-supplied via Settings → AI render.
+export const FEATURE_AI_RENDER_ENABLED = true;
 export const FEATURE_AI_ENABLED = false;
 export const FEATURE_FURNITURE_RECOMMENDATIONS_ENABLED = false;
 export const GOOGLE_SHEETS_INCLUDE_CAPTURED_IMAGES = true;

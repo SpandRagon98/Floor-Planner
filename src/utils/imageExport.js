@@ -11,8 +11,15 @@ export async function svgElementToPngDataUrl(svgEl, outputWidth = 1600) {
       image.onerror = reject;
       image.src = url;
     });
-    const bbox = svgEl.getBoundingClientRect();
-    const aspectRatio = bbox.width && bbox.height ? bbox.height / bbox.width : 0.6;
+    // Prefer explicit width/height attributes — detached clones (used for
+    // normalized exports) have no layout box, so getBoundingClientRect is 0×0.
+    const attrWidth = parseFloat(svgEl.getAttribute("width"));
+    const attrHeight = parseFloat(svgEl.getAttribute("height"));
+    let aspectRatio = attrWidth > 0 && attrHeight > 0 ? attrHeight / attrWidth : 0;
+    if (!aspectRatio) {
+      const bbox = svgEl.getBoundingClientRect();
+      aspectRatio = bbox.width && bbox.height ? bbox.height / bbox.width : 0.6;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = outputWidth;
     canvas.height = Math.round(outputWidth * aspectRatio);

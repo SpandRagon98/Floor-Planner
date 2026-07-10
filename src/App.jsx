@@ -34,6 +34,16 @@ import {
   Copy,
   Pencil,
   Check,
+  ChevronDown,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Eye,
+  Grid3x3,
+  Scan,
+  PanelRightClose,
+  PanelRightOpen,
+  KeyRound,
 } from "lucide-react";
 
 import {
@@ -96,6 +106,7 @@ import { getProjectIdFromUrl, buildProjectShareUrl, getViewModeFromUrl, isReadOn
 import { getFurnitureOptionsForCategory, getDefaultFurnitureSelection, getFurnitureRecommendationItems } from "./utils/furniture";
 import { getFriendlyCategoryName, extractPlanDimensions, makeDefaultDoorForRoom, makeDefaultWindowForRoom, createFurnitureFromPreset, getDefaultFurnitureForRoomName, createTemplateRoom, buildPresetTemplate, normalizeGeneratedRooms } from "./ai/presets";
 import { generateSmartVariants, parseRuleBasedPlanCommand, sanitizeOpenAIPlanResponse, generatePlanFromOpenAI, generateLayoutVariants } from "./ai/layoutGeneration";
+import { buildCompactSceneSummary } from "./ai/renderGeneration";
 import { fileToBase64, normalizeVisionWallName, resizeImageFileForVision, derivePlanSizeFromVision, sanitizeVisionFloorPlanResponse, analyzeFloorPlanImageWithOpenAI } from "./ai/imageAnalysis";
 import { generatePlanRendersWithOpenAI } from "./ai/renderGeneration";
 import { resolveAssetPath } from "./utils/assets";
@@ -103,6 +114,7 @@ import { svgElementToPngDataUrl } from "./utils/imageExport";
 import { createChatMessage, getSavedOpenAIApiKey, persistOpenAIApiKey } from "./utils/chat";
 import { useTheme } from "./hooks/useTheme";
 import { useUISettings, normalizeUISettings, ACCENT_OPTIONS } from "./hooks/useUISettings";
+import { useWorkspacePrefs } from "./hooks/useWorkspacePrefs";
 import { useSunSettings } from "./hooks/useSunSettings";
 import { useAssistantCollapsed } from "./hooks/useAssistantCollapsed";
 import { Floor3DScene } from "./components/3d/Floor3DComponents";
@@ -180,6 +192,25 @@ export default function App() {
   const { uiSettings, setUISettings } = useUISettings();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const accentSwatch = (ACCENT_OPTIONS.find((option) => option.id === uiSettings.accent) || ACCENT_OPTIONS[0]).swatch;
+
+  // ── Workspace layout preferences (collapsed panels — view-only, persisted) ──
+  const { workspacePrefs, toggleWorkspacePref } = useWorkspacePrefs();
+  const { designerCollapsed, metricsCollapsed, sidebarCollapsed } = workspacePrefs;
+
+  // ── 2D viewport (pan / zoom transform — never resizes the page) ──
+  const [view2d, setView2d] = useState({ x: 24, y: 24, k: 1 });
+  const svgViewportRef = useRef(null);
+  const panStateRef = useRef(null);
+  const hasUserAdjustedViewRef = useRef(false);
+  const [isPanning2d, setIsPanning2d] = useState(false);
+
+  // ── 3D structure view mode (X-Ray / Wireframe — mutually exclusive) ──
+  const [structureMode, setStructureMode] = useState("solid"); // "solid" | "xray" | "wireframe"
+  const [xrayOpacity, setXrayOpacity] = useState(0.35);
+
+  // ── AI render request lifecycle ──
+  const renderAbortRef = useRef(null);
+  const [openAIKeyDraft, setOpenAIKeyDraft] = useState(() => getSavedOpenAIApiKey());
 
   // ── Project state ──
   const [savedProjects,        setSavedProjects]        = useState([]);
@@ -276,6 +307,158 @@ export default function App() {
   const totalRoomArea        = placedRooms.reduce((sum, r) => sum + Number(r.width) * Number(r.height), 0);
   const totalPlanArea        = Number(totalWidth) * Number(totalHeight);
   const utilization          = totalPlanArea ? ((totalRoomArea / totalPlanArea) * 100).toFixed(1) : 0;
+
+  // ─── 2D viewport helpers ────────────────────────────────────────────────────
+
+  const clamp2dZoom = (k) => Math.min(8, Math.max(0.08, k));
+
+  const fitPlanToViewport = useCallback(() => {
+    const el = svgViewportRef.current;
+    if (!el || !el.clientWidth || !el.clientHeight || !svgWidth || !svgHeight) return;
+    const k = clamp2dZoom(Math.min((el.clientWidth - 24) / svgWidth, (el.clientHeight - 24) / svgHeight));
+    setView2d({
+      k,
+      x: (el.clientWidth - svgWidth * k) / 2,
+      y: (el.clientHeight - svgHeight * k) / 2,
+    });
+    hasUserAdjustedViewRef.current = false;
+  }, [svgWidth, svgHeight]);
+
+  const resetPlanView = useCallback(() => {
+    const el = svgViewportRef.current;
+    if (!el) return;
+    setView2d({ k: 1, x: Math.max((el.clientWidth - svgWidth) / 2, 24), y: 24 });
+    hasUserAdjustedViewRef.current = true;
+  }, [svgWidth]);
+
+  const zoomPlanBy = useCallback((factor, cx, cy) => {
+    const el = svgViewportRef.current;
+    if (!el) return;
+    const px = cx ?? el.clientWidth / 2;
+    const py = cy ?? el.clientHeight / 2;
+    hasUserAdjustedViewRef.current = true;
+    setView2d((prev) => {
+      const k = clamp2dZoom(prev.k * factor);
+      const ratio = k / prev.k;
+      // Zoom around the cursor: keep the plan point under (px, py) fixed.
+      return { k, x: px - (px - prev.x) * ratio, y: py - (py - prev.y) * ratio };
+    });
+  }, []);
+
+  // Auto-fit whenever the workspace box changes size (panel collapse, window
+  // resize, plan dimensions) — until the user takes over with manual pan/zoom.
+  // appMode is a dependency because the viewport element only exists in the
+  // editor: attaching while on the landing page would observe nothing.
+  useEffect(() => {
+    if (appMode !== "editor" || activeView !== "2d") return undefined;
+    const el = svgViewportRef.current;
+    if (!el) return undefined;
+    if (!hasUserAdjustedViewRef.current) fitPlanToViewport();
+    const observer = new ResizeObserver(() => {
+      if (!hasUserAdjustedViewRef.current) fitPlanToViewport();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [appMode, activeView, fitPlanToViewport]);
+
+  // Wheel zoom must be a native non-passive listener — React attaches wheel
+  // handlers passively, so preventDefault (needed to stop page scroll) is a
+  // no-op through the synthetic event system.
+  useEffect(() => {
+    if (appMode !== "editor" || activeView !== "2d") return undefined;
+    const el = svgViewportRef.current;
+    if (!el) return undefined;
+    const onWheel = (event) => {
+      event.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      if (event.shiftKey && !event.ctrlKey) {
+        hasUserAdjustedViewRef.current = true;
+        const delta = event.deltaY || event.deltaX;
+        setView2d((prev) => ({ ...prev, x: prev.x - delta }));
+        return;
+      }
+      // Trackpad pinch arrives as ctrl+wheel with fine deltas; plain wheel zooms too.
+      const factor = Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0016));
+      zoomPlanBy(factor, cx, cy);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [appMode, activeView, zoomPlanBy]);
+
+  const handleViewportPointerDown = (event) => {
+    if (event.button !== 0 && event.button !== 1) return;
+    panStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: view2d.x,
+      originY: view2d.y,
+      moved: false,
+    };
+  };
+
+  const handleViewportPointerMove = (event) => {
+    const pan = panStateRef.current;
+    if (!pan) return;
+    const dx = event.clientX - pan.startX;
+    const dy = event.clientY - pan.startY;
+    // 3px threshold keeps plain clicks (furniture selection) working untouched.
+    if (!pan.moved && Math.hypot(dx, dy) < 3) return;
+    if (!pan.moved) {
+      pan.moved = true;
+      hasUserAdjustedViewRef.current = true;
+      setIsPanning2d(true);
+      try { svgViewportRef.current?.setPointerCapture(pan.pointerId); } catch {}
+    }
+    setView2d((prev) => ({ ...prev, x: pan.originX + dx, y: pan.originY + dy }));
+  };
+
+  const handleViewportPointerUp = () => {
+    panStateRef.current = null;
+    setIsPanning2d(false);
+  };
+
+  // Detached clone with identity transform and full-plan viewBox — exports and
+  // captures always show the whole plan, independent of the on-screen pan/zoom.
+  const getNormalizedPlanSvg = () => {
+    const svgEl = document.getElementById("floor-plan-svg");
+    if (!svgEl) return null;
+    const clone = svgEl.cloneNode(true);
+    clone.setAttribute("viewBox", `0 0 ${svgWidth} ${svgHeight}`);
+    clone.setAttribute("width", svgWidth);
+    clone.setAttribute("height", svgHeight);
+    const viewportGroup = clone.querySelector("#plan-viewport");
+    if (viewportGroup) viewportGroup.setAttribute("transform", "translate(0 0) scale(1)");
+    return clone;
+  };
+
+  // ─── 3D camera helpers ──────────────────────────────────────────────────────
+
+  const frameCameraToPlan = useCallback((mode = "fit") => {
+    const camera = threeSceneStateRef.current?.camera;
+    const controls = orbitControlsRef.current;
+    if (!camera || !controls) return;
+    const tw = Number(totalWidth) || 40;
+    const th = Number(totalHeight) || 10;
+    const rh = Math.max(8, Number(roomHeight) || DEFAULT_ROOM_HEIGHT);
+    const levels = floorViewMode3D === "all" ? Math.max(floors.length, 1) : 1;
+    const stackTop = levels * (rh + 0.55);
+    const cx = tw / 2;
+    const cz = th / 2;
+    if (mode === "reset") {
+      camera.position.set(Math.max(tw * 0.85, 14), Math.max(rh * 2.2, 16), Math.max(th * 1.0, 14));
+      controls.target.set(cx, Math.min(stackTop * 0.28, rh), cz);
+    } else {
+      const span = Math.max(tw, th, stackTop, 12);
+      const distance = span * 1.3;
+      camera.position.set(cx + distance * 0.62, distance * 0.74, cz + distance * 0.62);
+      controls.target.set(cx, stackTop * 0.3, cz);
+    }
+    camera.updateProjectionMatrix?.();
+    controls.update?.();
+  }, [totalWidth, totalHeight, roomHeight, floors.length, floorViewMode3D]);
 
   // ─── Effects ────────────────────────────────────────────────────────────────
 
@@ -426,9 +609,30 @@ export default function App() {
   }, []);
 
   const capture2DImage = async () => {
-    const svgEl = document.getElementById("floor-plan-svg");
+    const svgEl = getNormalizedPlanSvg();
     if (!svgEl) return "";
     return await svgElementToPngDataUrl(svgEl, 1600);
+  };
+
+  // Downscale + re-encode a captured frame so the AI render reference stays
+  // structurally sharp without shipping a multi-megabyte full-res canvas.
+  const compressDataUrlImage = async (dataUrl, maxDim = 1024) => {
+    if (!dataUrl) return "";
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+    const scale = Math.min(1, maxDim / Math.max(image.width, image.height, 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
   };
 
   const capture3DImage = async () => {
@@ -1297,33 +1501,69 @@ const handleGenerateLayout = async (prompt) => {
     } finally { setIsFloorPlanUploading(false); }
   };
 
+  const handleCancelRender = () => {
+    renderAbortRef.current?.abort();
+  };
+
   const handleGenerateRenderImages = async () => {
-    if (!FEATURE_AI_RENDER_ENABLED || !FEATURE_AI_ENABLED) {
+    if (!FEATURE_AI_RENDER_ENABLED) {
       setProjectStatusMessage("AI Render is disabled.");
       return;
     }
-    if (isRenderGenerating) return;
-    if (!currentProjectId) { setProjectStatusMessage("Please save the project first before generating AI renders."); return; }
+    if (isRenderGenerating) return; // duplicate-request guard
+    const apiKey = getSavedOpenAIApiKey();
+    if (!apiKey) {
+      setProjectStatusMessage("Add your OpenAI API key first: Settings → AI render. It is stored only in this browser.");
+      setIsSettingsOpen(true);
+      return;
+    }
+    const abortController = new AbortController();
+    renderAbortRef.current = abortController;
     try {
-      setIsRenderGenerating(true); setProjectStatusMessage("Generating realistic AI renders...");
-      const apiKey = getSavedOpenAIApiKey();
-      if (!apiKey) throw new Error("OpenAI API key not found in localStorage.");
-      persistOpenAIApiKey(apiKey);
+      setIsRenderGenerating(true);
+      setProjectStatusMessage("Capturing the 3D scene for the AI render...");
       const previousView = activeView;
-      let image2D = "", image3D = "";
-      if (previousView !== "2d") await waitForViewRender("2d", 350);
-      image2D = await capture2DImage();
       if (previousView !== "3d") await waitForViewRender("3d", 700);
-      image3D = await capture3DImage();
-      if (previousView !== "3d") await waitForViewRender(previousView, 120);
-      const generatedImage = await generatePlanRendersWithOpenAI(apiKey, { planName, selectedCategory, totalWidth, totalHeight, rooms: placedRooms, image2D, image3D });
-      setGeneratedRenderImage(generatedImage); setGeneratedRenderProjectId(currentProjectId);
-      await syncAiRenderToGoogleSheets(currentProjectId, generatedImage);
-      setProjectStatusMessage("AI render generated successfully and synced to Google Sheets.");
+      const rawImage3D = await capture3DImage();
+      const image3D = await compressDataUrlImage(rawImage3D, 1024);
+      // Send only what the model needs: the floors currently shown, rounded.
+      const sceneSummary = buildCompactSceneSummary({
+        totalWidth,
+        totalHeight,
+        roomHeight,
+        floors: floorViewMode3D === "active" && activeFloorView ? [activeFloorView] : floorsForView,
+      });
+      setProjectStatusMessage("Generating a photorealistic render of your exact design...");
+      const generatedImage = await generatePlanRendersWithOpenAI(
+        apiKey,
+        { planName, selectedCategory, sceneSummary, image3D },
+        { signal: abortController.signal }
+      );
+      setGeneratedRenderImage(generatedImage);
+      setGeneratedRenderProjectId(currentProjectId);
+      if (currentProjectId) {
+        try {
+          await syncAiRenderToGoogleSheets(currentProjectId, generatedImage);
+          setProjectStatusMessage("AI render generated and synced to Google Sheets.");
+        } catch (syncError) {
+          console.warn("AI render sheet sync failed:", syncError);
+          setProjectStatusMessage("AI render generated. (Google Sheets sync failed — save the project to retry.)");
+        }
+      } else {
+        setProjectStatusMessage("AI render generated. Save the project to keep it with your plan.");
+      }
     } catch (error) {
-      console.error("AI render generation failed:", error);
-      setProjectStatusMessage(error?.message || "Failed to generate AI render. Please try again.");
-    } finally { setIsRenderGenerating(false); if (activeView !== "3d") setActiveView("3d"); }
+      if (error?.name === "AbortError") {
+        setProjectStatusMessage("AI render cancelled.");
+      } else {
+        console.error("AI render generation failed:", error);
+        setProjectStatusMessage(`${error?.message || "Failed to generate AI render."} Press AI Render to retry.`);
+      }
+    } finally {
+      renderAbortRef.current = null;
+      setIsRenderGenerating(false);
+      if (activeView !== "3d") setActiveView("3d");
+    }
   };
 
   // ─── Voice / Chat ────────────────────────────────────────────────────────────
@@ -1362,7 +1602,7 @@ const handleGenerateLayout = async (prompt) => {
   };
 
   const exportSVG = () => {
-    const svgEl = document.getElementById("floor-plan-svg");
+    const svgEl = getNormalizedPlanSvg();
     if (!svgEl) return;
     const source = new XMLSerializer().serializeToString(svgEl);
     const url = URL.createObjectURL(new Blob([source], { type: "image/svg+xml;charset=utf-8" }));
@@ -1566,6 +1806,44 @@ const handleGenerateLayout = async (prompt) => {
                   </button>
                 </div>
               </div>
+
+              {FEATURE_AI_RENDER_ENABLED && (
+                <div className="settings-section">
+                  <div className="settings-section-title">AI Render</div>
+                  <div className="settings-glass-copy" style={{ marginBottom: 8 }}>
+                    <strong><KeyRound size={12} style={{ verticalAlign: "-1px", marginRight: 5 }} />OpenAI API key</strong>
+                    <span>Needed for photorealistic renders. Stored only in this browser — it is never bundled with the app or sent anywhere except OpenAI.</span>
+                  </div>
+                  <div className="settings-api-key-row">
+                    <input
+                      type="password"
+                      className="settings-api-key-input"
+                      placeholder="sk-..."
+                      value={openAIKeyDraft}
+                      autoComplete="off"
+                      onChange={(e) => setOpenAIKeyDraft(e.target.value)}
+                      onBlur={() => {
+                        const trimmed = openAIKeyDraft.trim();
+                        if (trimmed) persistOpenAIApiKey(trimmed);
+                        else { try { window.localStorage.removeItem(FLOOR_PLAN_OPENAI_KEY_STORAGE); } catch {} }
+                      }}
+                    />
+                    {openAIKeyDraft ? (
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        style={{ fontSize: 11, padding: "6px 10px" }}
+                        onClick={() => {
+                          setOpenAIKeyDraft("");
+                          try { window.localStorage.removeItem(FLOOR_PLAN_OPENAI_KEY_STORAGE); } catch {}
+                        }}
+                      >
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              )}
             </div>
           </LiquidGlassPanel>
         </div>
@@ -1607,7 +1885,7 @@ const handleGenerateLayout = async (prompt) => {
       )}
 
       {/* Workspace */}
-      <div className="workspace-grid">
+      <div className={`workspace-grid${sidebarCollapsed ? " workspace-grid--sidebar-collapsed" : ""}`}>
         <main className="workspace-main">
           {/* Top Control */}
           <section className="top-control-card">
@@ -1617,7 +1895,51 @@ const handleGenerateLayout = async (prompt) => {
                   makes it by far the most expensive always-on liquid-glass
                   surface. It keeps the existing CSS-only frosted look
                   instead — see SKILL.md's sizing guidance. */}
-              <div className="input-card top-input-card top-input-card--premium">
+              <div className={`input-card top-input-card top-input-card--premium${designerCollapsed ? " is-collapsed" : ""}`}>
+                <div className="top-input-meta-row top-input-meta-row--premium">
+                  <div className="top-input-brand">
+                    <img
+                      src={resolveAssetPath("pwa-512.png")}
+                      alt="Floora"
+                      className="header-brand-logo"
+                      style={{ height: 34, width: 34, objectFit: "contain", flexShrink: 0, borderRadius: 8 }}
+                    />
+                    <div className="top-input-brand-copy">
+                      <div className="top-input-title-row">
+                        <h1><Home size={16} />Premium Floor Plan Designer</h1>
+                      </div>
+                      {!designerCollapsed && <p>Build your dream space today and walk through it in 3D instantly</p>}
+                    </div>
+                  </div>
+
+                  <div className="top-input-meta-actions">
+                    <div className="top-input-title-controls">
+                      <button type="button" className="theme-toggle" onClick={() => setTheme((p) => p === "dark" ? "light" : "dark")} aria-label="Toggle theme">
+                        <span className={`theme-toggle-option ${theme === "light" ? "is-active" : ""}`}><Sun size={12} />Light</span>
+                        <span className={`theme-toggle-option ${theme === "dark"  ? "is-active" : ""}`}><Moon size={12} />Dark</span>
+                      </button>
+                      <button type="button" className="secondary-btn settings-open-btn" onClick={() => setIsSettingsOpen(true)} aria-label="Open settings">
+                        <Settings size={14} />Settings
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn panel-collapse-btn"
+                        onClick={() => toggleWorkspacePref("designerCollapsed")}
+                        aria-expanded={!designerCollapsed}
+                        aria-label={designerCollapsed ? "Expand designer panel" : "Collapse designer panel"}
+                        title={designerCollapsed ? "Expand designer panel" : "Collapse designer panel"}
+                      >
+                        <ChevronDown size={15} className={`panel-chevron${designerCollapsed ? "" : " is-open"}`} />
+                      </button>
+                    </div>
+                    {projectStatusMessage && (
+                      <div className="project-status-banner project-status-banner--inline">{projectStatusMessage}</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className={`collapse-v${designerCollapsed ? " is-collapsed" : ""}`}>
+                <div className="collapse-v-inner">
                 <div className="top-toolbar-row top-toolbar-row--header">
                   <div className="project-actions-card project-actions-card--toolbar input-card">
                     <button className="ghost-btn project-stack-btn" onClick={handleNewProject}><FilePlus2 size={14} />New Project</button>
@@ -1647,44 +1969,6 @@ const handleGenerateLayout = async (prompt) => {
                         <Sparkles size={14} />
                         AI Landing
                       </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="top-input-meta-row top-input-meta-row--premium">
-                 <div className="top-input-brand">
-  <img
-    src={resolveAssetPath("pwa-512.png")}
-    alt="Floora"
-    className="header-brand-logo"
-    style={{
-      height: 34,
-      width: 34,
-      objectFit: "contain",
-      flexShrink: 0,
-      borderRadius: 8,
-    }}
-  />
-  <div className="top-input-brand-copy">
-    <div className="top-input-title-row">
-      <h1><Home size={16} />Premium Floor Plan Designer</h1>
-    </div>
-    <p>Build your dream space today and walk through it in 3D instantly</p>
-  </div>
-</div>
-
-                  <div className="top-input-meta-actions">
-                    <div className="top-input-title-controls">
-                      <button type="button" className="theme-toggle" onClick={() => setTheme((p) => p === "dark" ? "light" : "dark")} aria-label="Toggle theme">
-                        <span className={`theme-toggle-option ${theme === "light" ? "is-active" : ""}`}><Sun size={12} />Light</span>
-                        <span className={`theme-toggle-option ${theme === "dark"  ? "is-active" : ""}`}><Moon size={12} />Dark</span>
-                      </button>
-                      <button type="button" className="secondary-btn settings-open-btn" onClick={() => setIsSettingsOpen(true)} aria-label="Open settings">
-                        <Settings size={14} />Settings
-                      </button>
-                    </div>
-                    {projectStatusMessage && (
-                      <div className="project-status-banner project-status-banner--inline">{projectStatusMessage}</div>
                     )}
                   </div>
                 </div>
@@ -1719,15 +2003,50 @@ const handleGenerateLayout = async (prompt) => {
                     </div>
                   </div>
                 </div>
+                </div>
+                </div>
               </div>
             </div>
           </section>
-          {/* Stats */}
-          <section className="preview-stats-row">
-            <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Plan Size</span><strong>{totalWidth} × {totalHeight}</strong></LiquidGlassPanel>
-            <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Total Rooms</span><strong>{placedRooms.length}</strong></LiquidGlassPanel>
-            <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Room Area</span><strong>{totalRoomArea.toFixed(0)} sq ft</strong></LiquidGlassPanel>
-            <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Space Utilization</span><strong>{utilization}%</strong></LiquidGlassPanel>
+          {/* Stats — expanded cards and compact summary swap with opposing collapse animations */}
+          <section className="metrics-section" aria-label="Plan metrics">
+            <div className={`collapse-v${metricsCollapsed ? " is-collapsed" : ""}`}>
+              <div className="collapse-v-inner">
+                <div className="preview-stats-row preview-stats-row--collapsible">
+                  <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Plan Size</span><strong className="num">{totalWidth} × {totalHeight}</strong></LiquidGlassPanel>
+                  <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Total Rooms</span><strong className="num">{placedRooms.length}</strong></LiquidGlassPanel>
+                  <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Room Area</span><strong className="num">{totalRoomArea.toFixed(0)} sq ft</strong></LiquidGlassPanel>
+                  <LiquidGlassPanel as="div" enabled={uiSettings.glassMode} options={LIQUID_GLASS_OPTIONS.card} className="summary-box stat-box"><span>Space Utilization</span><strong className="num">{utilization}%</strong></LiquidGlassPanel>
+                  <button
+                    type="button"
+                    className="metrics-collapse-handle"
+                    onClick={() => toggleWorkspacePref("metricsCollapsed")}
+                    aria-expanded={!metricsCollapsed}
+                    aria-label="Collapse metrics"
+                    title="Collapse metrics"
+                  >
+                    <ChevronDown size={14} className="panel-chevron is-open" />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className={`collapse-v${metricsCollapsed ? "" : " is-collapsed"}`}>
+              <div className="collapse-v-inner">
+                <button
+                  type="button"
+                  className="metrics-summary-bar input-card"
+                  onClick={() => toggleWorkspacePref("metricsCollapsed")}
+                  aria-expanded={metricsCollapsed ? false : true}
+                  title="Expand metrics"
+                >
+                  <span className="metrics-summary-item"><span>Plan</span><strong className="num">{totalWidth} × {totalHeight}</strong></span>
+                  <span className="metrics-summary-item"><span>Rooms</span><strong className="num">{placedRooms.length}</strong></span>
+                  <span className="metrics-summary-item"><span>Area</span><strong className="num">{totalRoomArea.toFixed(0)} sq ft</strong></span>
+                  <span className="metrics-summary-item"><span>Used</span><strong className="num">{utilization}%</strong></span>
+                  <ChevronDown size={14} className="panel-chevron" />
+                </button>
+              </div>
+            </div>
           </section>
 
           {/* Floor selector */}
@@ -1781,21 +2100,68 @@ const handleGenerateLayout = async (prompt) => {
               </button>
             </div>
             {activeView === "3d" && (
-              <div className="floor-view-toggle">
-                <button
-                  type="button"
-                  className={`floor-view-toggle-option${floorViewMode3D === "active" ? " is-active" : ""}`}
-                  onClick={() => setFloorViewMode3D("active")}
-                >
-                  Active Floor
-                </button>
-                <button
-                  type="button"
-                  className={`floor-view-toggle-option${floorViewMode3D === "all" ? " is-active" : ""}`}
-                  onClick={() => setFloorViewMode3D("all")}
-                >
-                  All Floors
-                </button>
+              <div className="floor-bar-3d-controls">
+                <div className="floor-view-toggle" role="group" aria-label="Floor visibility">
+                  <button
+                    type="button"
+                    title="Show only the selected floor"
+                    className={`floor-view-toggle-option${floorViewMode3D === "active" ? " is-active" : ""}`}
+                    onClick={() => setFloorViewMode3D("active")}
+                  >
+                    Active Floor
+                  </button>
+                  <button
+                    type="button"
+                    title="Show every floor stacked"
+                    className={`floor-view-toggle-option${floorViewMode3D === "all" ? " is-active" : ""}`}
+                    onClick={() => setFloorViewMode3D("all")}
+                  >
+                    All Floors
+                  </button>
+                </div>
+                <div className="floor-view-toggle" role="group" aria-label="Structure view mode">
+                  <button
+                    type="button"
+                    title="See through walls and slabs"
+                    aria-pressed={structureMode === "xray"}
+                    className={`floor-view-toggle-option${structureMode === "xray" ? " is-active" : ""}`}
+                    onClick={() => setStructureMode((prev) => prev === "xray" ? "solid" : "xray")}
+                  >
+                    <Scan size={12} />X-Ray
+                  </button>
+                  <button
+                    type="button"
+                    title="Show walls and slabs as wireframe"
+                    aria-pressed={structureMode === "wireframe"}
+                    className={`floor-view-toggle-option${structureMode === "wireframe" ? " is-active" : ""}`}
+                    onClick={() => setStructureMode((prev) => prev === "wireframe" ? "solid" : "wireframe")}
+                  >
+                    <Grid3x3 size={12} />Wireframe
+                  </button>
+                </div>
+                {structureMode === "xray" && (
+                  <label className="xray-opacity-control" title="X-Ray wall transparency">
+                    <Eye size={12} />
+                    <input
+                      type="range"
+                      min="0.06"
+                      max="0.85"
+                      step="0.01"
+                      value={xrayOpacity}
+                      aria-label="X-Ray opacity"
+                      onChange={(e) => setXrayOpacity(Number(e.target.value))}
+                    />
+                    <span className="num">{Math.round(xrayOpacity * 100)}%</span>
+                  </label>
+                )}
+                <div className="floor-bar-camera-group">
+                  <button type="button" className="floor-chip-action" title="Fit camera to plan" aria-label="Fit camera to plan" onClick={() => frameCameraToPlan("fit")}>
+                    <Maximize2 size={13} />
+                  </button>
+                  <button type="button" className="floor-chip-action" title="Reset camera" aria-label="Reset camera" onClick={() => frameCameraToPlan("reset")}>
+                    <RotateCcw size={13} />
+                  </button>
+                </div>
               </div>
             )}
           </LiquidGlassPanel>
@@ -1823,8 +2189,16 @@ const handleGenerateLayout = async (prompt) => {
                     </div>
                   </div>
 
-                  <div className="svg-wrap svg-wrap--dominant" onClick={clearSelectedFurniture}>
-                    <svg id="floor-plan-svg" viewBox={`0 0 ${svgWidth} ${svgHeight}`} width="100%" height="100%">
+                  <div
+                    className={`svg-wrap svg-wrap--dominant svg-wrap--viewport${isPanning2d ? " is-panning" : ""}`}
+                    ref={svgViewportRef}
+                    onClick={clearSelectedFurniture}
+                    onPointerDown={handleViewportPointerDown}
+                    onPointerMove={handleViewportPointerMove}
+                    onPointerUp={handleViewportPointerUp}
+                    onPointerCancel={handleViewportPointerUp}
+                  >
+                    <svg id="floor-plan-svg" width="100%" height="100%">
                       <defs>
                         <pattern id="smallGrid" width="10" height="10" patternUnits="userSpaceOnUse">
                           <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#dbe3ec" strokeWidth="1" />
@@ -1853,7 +2227,8 @@ const handleGenerateLayout = async (prompt) => {
                           );
                         })}
                       </defs>
-                      <rect width={svgWidth} height={svgHeight} fill="#ffffff" />
+                      <g id="plan-viewport" transform={`translate(${view2d.x} ${view2d.y}) scale(${view2d.k})`}>
+                      <rect width={svgWidth} height={svgHeight} fill="#ffffff" className="plan-paper" rx={8} />
                       <g transform="translate(60,60)">
                         <rect width={canvasWidth} height={canvasHeight} fill="url(#grid)" />
                         {/* Land / buildable area outline — dashed marker only, not a wall */}
@@ -1950,7 +2325,20 @@ const handleGenerateLayout = async (prompt) => {
                         <text x={canvasWidth / 2} y={-18} textAnchor="middle" style={{ fontSize: 7, fontWeight: 600, fill: "#324257", opacity: 0.88, letterSpacing: "0.2px" }}>Width: {totalWidth} ft</text>
                         <text x={-18} y={canvasHeight / 2} textAnchor="middle" transform={`rotate(-90, -18, ${canvasHeight / 2})`} style={{ fontSize: 7, fontWeight: 600, fill: "#324257", opacity: 0.88, letterSpacing: "0.2px" }}>Height: {totalHeight} ft</text>
                       </g>
+                      </g>
                     </svg>
+                    <div
+                      className="canvas-zoom-controls"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => zoomPlanBy(1 / 1.25)}><ZoomOut size={14} /></button>
+                      <span className="zoom-readout num" aria-live="polite">{Math.round(view2d.k * 100)}%</span>
+                      <button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => zoomPlanBy(1.25)}><ZoomIn size={14} /></button>
+                      <span className="canvas-zoom-divider" aria-hidden="true" />
+                      <button type="button" title="Fit plan to screen" aria-label="Fit plan to screen" onClick={fitPlanToViewport}><Maximize2 size={13} /></button>
+                      <button type="button" title="Reset view to 100%" aria-label="Reset view to 100%" onClick={resetPlanView}><RotateCcw size={13} /></button>
+                    </div>
                   </div>
 
                   {renderFurnitureRecommendations()}
@@ -1975,12 +2363,12 @@ const handleGenerateLayout = async (prompt) => {
                         <button className={`view-toolbar-btn${renderQuality === "high" ? " active" : ""}`} onClick={() => setRenderQuality("high")}>High Quality</button>
                       </div>
                       <button className="view-toolbar-btn view-toolbar-btn--dark" onClick={exportSVG}>Export SVG</button>
-                      {FEATURE_AI_RENDER_ENABLED && FEATURE_AI_ENABLED && (
+                      {FEATURE_AI_RENDER_ENABLED && (
                         <button
                           className="view-toolbar-btn view-toolbar-btn--dark ai-render-btn"
                           onClick={handleGenerateRenderImages}
-                          disabled={!currentProjectId || isRenderGenerating}
-                          title={!currentProjectId ? "Save the project first" : "Generate realistic AI renders"}
+                          disabled={isRenderGenerating}
+                          title="Generate a photorealistic render of exactly this scene"
                         >
                           {isRenderGenerating ? <><Loader2 size={16} className="spin-icon" />Rendering...</> : <><ImageIcon size={16} />AI Render</>}
                         </button>
@@ -2078,14 +2466,18 @@ const handleGenerateLayout = async (prompt) => {
                         totalWidth={Number(totalWidth)} totalHeight={Number(totalHeight)}
                         wallThickness={Number(wallThickness)} roomThickness={Number(roomThickness)} roomHeight={Number(roomHeight)} wallSegments={wallSegments}
                         selectedFurnitureKey={selectedFurnitureKey} onFurnitureSelect={handleFurnitureSelection}
-                        sunSettings={sunSettings} globalWallColor={globalWallColor} orbitControlsRef={orbitControlsRef} renderQuality={renderQuality} />
+                        sunSettings={sunSettings} globalWallColor={globalWallColor} orbitControlsRef={orbitControlsRef} renderQuality={renderQuality}
+                        structureMode={structureMode} xrayOpacity={xrayOpacity} />
                     </Canvas>
                     {FEATURE_AI_RENDER_ENABLED && isRenderGenerating && (
                       <div className="ai-render-overlay">
                         <div className="ai-render-loader-card">
                           <Loader2 size={22} className="spin-icon" />
                           <strong>Generating realistic render...</strong>
-                          <span>Please wait while ChatGPT creates multiple camera-angle visuals.</span>
+                          <span>Recreating exactly your scene with photorealistic lighting and materials.</span>
+                          <button type="button" className="secondary-btn ai-render-cancel-btn" onClick={handleCancelRender}>
+                            <X size={14} />Cancel
+                          </button>
                         </div>
                       </div>
                     )}
@@ -2180,6 +2572,18 @@ const handleGenerateLayout = async (prompt) => {
         </main>
 
         {/* Rooms Sidebar */}
+        {sidebarCollapsed ? (
+          <button
+            type="button"
+            className="rooms-sidebar-rail input-card"
+            onClick={() => toggleWorkspacePref("sidebarCollapsed")}
+            title="Open rooms panel"
+            aria-label="Open rooms panel"
+          >
+            <PanelRightOpen size={15} />
+            <span className="rooms-sidebar-rail-label">Rooms &amp; floors</span>
+          </button>
+        ) : (
         <aside className="rooms-sidebar input-card">
           <div className="section-header rooms-sidebar-header">
             <h2>Rooms</h2>
@@ -2189,6 +2593,15 @@ const handleGenerateLayout = async (prompt) => {
                 <button className="ghost-btn" onClick={autoArrangeRooms}><RotateCw size={16} />Auto-Arrange</button>
               )}
               <button className="primary-btn" onClick={addRoom}><Plus size={16} />New Room</button>
+              <button
+                type="button"
+                className="icon-btn panel-collapse-btn"
+                onClick={() => toggleWorkspacePref("sidebarCollapsed")}
+                title="Collapse rooms panel"
+                aria-label="Collapse rooms panel"
+              >
+                <PanelRightClose size={15} />
+              </button>
             </div>
           </div>
 
@@ -2478,6 +2891,7 @@ const handleGenerateLayout = async (prompt) => {
             })}
           </div>
         </aside>
+        )}
       </div>
     </div>
   );

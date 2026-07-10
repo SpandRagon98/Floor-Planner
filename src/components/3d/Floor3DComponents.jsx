@@ -24,7 +24,7 @@ import { loadSharedTexture, getCachedTexture } from "../../utils/textureCache";
 
 // ─── 3D Wall ─────────────────────────────────────────────────────────────────
 
-function WallMesh({ segment, wallThickness, height, rooms, globalWallColor }) {
+function WallMesh({ segment, wallThickness, height, rooms, globalWallColor, structureMode = "solid", xrayOpacity = 0.35 }) {
   const { x1, y1, x2, y2 } = segment;
   const isVertical = x1 === x2;
   const length = isVertical ? Math.abs(y2 - y1) : Math.abs(x2 - x1);
@@ -69,32 +69,34 @@ function WallMesh({ segment, wallThickness, height, rooms, globalWallColor }) {
   }
 
   const wallColor = globalWallColor || DEFAULT_WALL_COLOR;
+  // Structure view modes. Materials are declared per-mesh (R3F creates a fresh
+  // instance for each), so toggling these props never mutates a shared
+  // material — switching back to "solid" restores the original look exactly.
+  const isXray = structureMode === "xray";
+  const isWire = structureMode === "wireframe";
+  const solidShadows = !isXray && !isWire;
 
   return (
     <group>
       {bands.map((band, index) => {
-        if (isVertical) {
-          return (
-            <mesh
-              key={index}
-              castShadow
-              receiveShadow
-              position={[x1, (band.bandBottom + band.bandTop) / 2, (band.start + band.end) / 2]}
-            >
-              <boxGeometry args={[wallThickness, band.bandHeight, band.partLength]} />
-              <meshStandardMaterial color={wallColor} roughness={0.9} metalness={0.02} />
-            </mesh>
-          );
-        }
+        const position = isVertical
+          ? [x1, (band.bandBottom + band.bandTop) / 2, (band.start + band.end) / 2]
+          : [(band.start + band.end) / 2, (band.bandBottom + band.bandTop) / 2, y1];
+        const args = isVertical
+          ? [wallThickness, band.bandHeight, band.partLength]
+          : [band.partLength, band.bandHeight, wallThickness];
         return (
-          <mesh
-            key={index}
-            castShadow
-            receiveShadow
-            position={[(band.start + band.end) / 2, (band.bandBottom + band.bandTop) / 2, y1]}
-          >
-            <boxGeometry args={[band.partLength, band.bandHeight, wallThickness]} />
-            <meshStandardMaterial color={wallColor} roughness={0.9} metalness={0.02} />
+          <mesh key={index} castShadow={solidShadows} receiveShadow={solidShadows} position={position} renderOrder={isXray ? 2 : 0}>
+            <boxGeometry args={args} />
+            <meshStandardMaterial
+              color={wallColor}
+              roughness={0.9}
+              metalness={0.02}
+              transparent={isXray}
+              opacity={isXray ? xrayOpacity : 1}
+              depthWrite={!isXray}
+              wireframe={isWire}
+            />
           </mesh>
         );
       })}
@@ -102,7 +104,7 @@ function WallMesh({ segment, wallThickness, height, rooms, globalWallColor }) {
   );
 }
 
-function RoomFloor3D({ room, isLowQuality = false }) {
+function RoomFloor3D({ room, isLowQuality = false, structureMode = "solid", xrayOpacity = 0.35 }) {
   const textureMeta = getFloorTextureById(room.floorTextureId);
   const resolvedTexturePath = useMemo(() => resolveAssetPath(textureMeta.image), [textureMeta.image]);
   // Seed from the shared cache so texture switches never flash the fallback color.
@@ -144,18 +146,29 @@ function RoomFloor3D({ room, isLowQuality = false }) {
     preparedTexture?.dispose?.();
   }, [preparedTexture]);
 
+  // Floor planes count as structure: wireframe strips the texture map (lines
+  // with a photo map look broken), X-Ray keeps the map but goes translucent so
+  // lower floors show through in stacked views. Both are prop-driven, so
+  // returning to "solid" restores the textured material untouched.
+  const isXray = structureMode === "xray";
+  const isWire = structureMode === "wireframe";
+
   return (
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
       position={[Number(room.x) + Number(room.width) / 2, 0.03, Number(room.y) + Number(room.height) / 2]}
-      receiveShadow={!isLowQuality}
+      receiveShadow={!isLowQuality && !isXray && !isWire}
     >
       <planeGeometry args={[Math.max(Number(room.width) - 0.12, 0.2), Math.max(Number(room.height) - 0.12, 0.2)]} />
       <meshStandardMaterial
-        map={preparedTexture || null}
-        color={preparedTexture ? "#ffffff" : (room.color || "#ffffff")}
+        map={isWire ? null : (preparedTexture || null)}
+        color={!isWire && preparedTexture ? "#ffffff" : (room.color || "#ffffff")}
         roughness={isLowQuality ? 0.96 : 0.82}
         metalness={isLowQuality ? 0.01 : 0.04}
+        transparent={isXray}
+        opacity={isXray ? Math.max(xrayOpacity, 0.25) : 1}
+        depthWrite={!isXray}
+        wireframe={isWire}
       />
     </mesh>
   );
@@ -792,9 +805,14 @@ function FloorLevel3D({
   onFurnitureSelect,
   globalWallColor,
   isLowQuality,
+  structureMode = "solid",
+  xrayOpacity = 0.35,
 }) {
   const rooms = floor.placedRooms || floor.rooms || [];
   const wallSegments = floor.wallSegments || [];
+  const isXray = structureMode === "xray";
+  const isWire = structureMode === "wireframe";
+  const solidShadows = !isLowQuality && !isXray && !isWire;
 
   return (
     <group>
@@ -806,12 +824,20 @@ function FloorLevel3D({
         return (
           <group key={room.id}>
             {level > 0 && (
-              <mesh castShadow={!isLowQuality} receiveShadow={!isLowQuality} position={[x + w / 2, -FLOOR_SLAB_THICKNESS / 2, z + d / 2]}>
+              <mesh castShadow={solidShadows} receiveShadow={solidShadows} position={[x + w / 2, -FLOOR_SLAB_THICKNESS / 2, z + d / 2]} renderOrder={isXray ? 2 : 0}>
                 <boxGeometry args={[w, FLOOR_SLAB_THICKNESS, d]} />
-                <meshStandardMaterial color="#c9d2dd" roughness={0.9} metalness={0.03} />
+                <meshStandardMaterial
+                  color="#c9d2dd"
+                  roughness={0.9}
+                  metalness={0.03}
+                  transparent={isXray}
+                  opacity={isXray ? xrayOpacity : 1}
+                  depthWrite={!isXray}
+                  wireframe={isWire}
+                />
               </mesh>
             )}
-            <RoomFloor3D room={room} isLowQuality={isLowQuality} />
+            <RoomFloor3D room={room} isLowQuality={isLowQuality} structureMode={structureMode} xrayOpacity={xrayOpacity} />
             <DreiText
               position={[x + w / 2, 0.12, z + d / 2]}
               fontSize={0.52}
@@ -855,6 +881,8 @@ function FloorLevel3D({
           height={wallHeight}
           rooms={rooms}
           globalWallColor={globalWallColor}
+          structureMode={structureMode}
+          xrayOpacity={xrayOpacity}
         />
       ))}
 
@@ -917,6 +945,8 @@ function Floor3DScene({
   globalWallColor,
   orbitControlsRef,
   renderQuality = "high",
+  structureMode = "solid",
+  xrayOpacity = 0.35,
 }) {
   const centerX = totalWidth / 2;
   const centerZ = totalHeight / 2;
@@ -1014,6 +1044,8 @@ function Floor3DScene({
               onFurnitureSelect={onFurnitureSelect}
               globalWallColor={globalWallColor}
               isLowQuality={isLowQuality}
+              structureMode={structureMode}
+              xrayOpacity={xrayOpacity}
             />
           </group>
         );
