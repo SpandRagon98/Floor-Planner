@@ -1903,6 +1903,7 @@ const handleGenerateLayout = async (prompt) => {
                       alt="Floora"
                       className="header-brand-logo"
                       style={{ height: 34, width: 34, objectFit: "contain", flexShrink: 0, borderRadius: 8 }}
+                      onError={(e) => { e.currentTarget.style.display = "none"; }}
                     />
                     <div className="top-input-brand-copy">
                       <div className="top-input-title-row">
